@@ -1,22 +1,25 @@
 package com.lantian.lam.filter;
 
-import jakarta.servlet.*;
+import jakarta.servlet.DispatcherType;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
-
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
 
 @Component
 @Slf4j
 public class RequestLoggingFilter extends OncePerRequestFilter {
+
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String uri = request.getRequestURI();
 
+        // 只过滤以/lam开头的请求，并且确保是REQUEST类型的分发
         return request.getDispatcherType() != DispatcherType.REQUEST
                 || !uri.startsWith("/lam");
     }
@@ -27,7 +30,13 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
                                     FilterChain filterChain)
             throws ServletException, IOException {
 
-        log.info("Request: {} {}", request.getMethod(), request.getRequestURI());
+        // 记录请求信息
+        log.info("Request: {} {} from {}",
+                request.getMethod(),
+                request.getRequestURI(),
+                request.getRemoteAddr());
+
+        // 继续执行过滤器链
         filterChain.doFilter(request, response);
     }
 }

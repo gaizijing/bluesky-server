@@ -16,7 +16,7 @@ public class UserServiceImpl implements IUserService {
     @Override
     public User getByName(String name) {
         LambdaQueryWrapper<User> queryWrapper = new LambdaQueryWrapper<>();
-        queryWrapper.eq(User::getName, name);
+        queryWrapper.eq(User::getUsername, name);
         return userMapper.selectOne(queryWrapper);
     }
 }
