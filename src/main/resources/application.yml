@@ -29,3 +29,9 @@ server:
     whitelabel:
       enabled: false
   port: 8080
+app:
+  udp:
+    enabled: true
+    port: 2771
+    buffer-size: 2048
+    receive-timeout: 3000
