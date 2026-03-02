@@ -35,6 +35,7 @@ CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 CREATE TABLE IF NOT EXISTS monitoring_points (
     id VARCHAR(50) PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
+    code VARCHAR(50),
     type VARCHAR(20) NOT NULL,
     location VARCHAR(200),
     longitude DECIMAL(10, 6) NOT NULL,
@@ -48,6 +49,7 @@ CREATE TABLE IF NOT EXISTS monitoring_points (
     warning_reason VARCHAR(500),
     last_update BIGINT,
     is_active BOOLEAN DEFAULT true,
+    is_selected BOOLEAN DEFAULT false,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_by VARCHAR(50),
@@ -215,7 +217,7 @@ CREATE TABLE IF NOT EXISTS suitability_analysis (
     factor VARCHAR(50) NOT NULL,
     time_point VARCHAR(50) NOT NULL,
     is_suitable BOOLEAN,
-    abnormal_value VARCHAR(50),
+    abnormal_value NUMERIC(10,2),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_sa_point FOREIGN KEY (point_id) REFERENCES monitoring_points(id)
 );

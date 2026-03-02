@@ -21,6 +21,9 @@
     <properties>
         <java.version>17</java.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <maven.compiler.encoding>UTF-8</maven.compiler.encoding>
+        <file.encoding>UTF-8</file.encoding>
         <mybatis-plus.version>3.5.7</mybatis-plus.version>
         <jwt.version>0.12.3</jwt.version>
         <knife4j.version>4.4.0</knife4j.version>
@@ -142,6 +145,7 @@
                             <artifactId>lombok</artifactId>
                         </exclude>
                     </excludes>
+                    <jvmArguments>-Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8</jvmArguments>
                 </configuration>
             </plugin>
         </plugins>

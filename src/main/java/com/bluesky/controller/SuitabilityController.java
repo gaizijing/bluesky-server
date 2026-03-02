@@ -29,7 +29,7 @@ public class SuitabilityController {
     @Operation(summary = "获取适飞状态", description = "按时间维度和气象因素返回适飞分析热力图数据")
     @GetMapping("/status")
     public Result<Map<String, Object>> getSuitabilityStatus(
-            @Parameter(description = "重点关注区域ID") @RequestParam String pointId,
+            @Parameter(description = "重点关注区域ID") @RequestParam(required = false) String pointId,
             @Parameter(description = "气象因素: 综合/风/风切变/颠簸指数/湍流/降水/能见度") @RequestParam(required = false) String factor,
             @Parameter(description = "预测总时长(小时),默认24") @RequestParam(required = false, defaultValue = "24") Integer totalHours) {
         return Result.success(suitabilityService.getSuitabilityStatus(pointId, factor, totalHours));

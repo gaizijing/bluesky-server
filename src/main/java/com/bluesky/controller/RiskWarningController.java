@@ -28,8 +28,13 @@ public class RiskWarningController {
     @Operation(summary = "获取风险预警数据", description = "获取指定重点关注区域和时间范围内的风险预警信息")
     @GetMapping("/report")
     public Result<Map<String, Object>> getWarnings(
-            @RequestParam String pointId,
-            @RequestParam String timeRange) {
+            @RequestParam(required = false) String pointId,
+            @RequestParam(required = false) String timeRange) {
+        // 默认时间范围为今天
+        if (timeRange == null || timeRange.isEmpty()) {
+            java.time.LocalDate today = java.time.LocalDate.now();
+            timeRange = today + " 00:00:00," + today + " 23:59:59";
+        }
         Map<String, Object> warnings = riskWarningService.getWarnings(pointId, timeRange);
         return Result.success(warnings);
     }

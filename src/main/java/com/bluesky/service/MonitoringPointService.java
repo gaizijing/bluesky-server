@@ -78,4 +78,53 @@ public class MonitoringPointService {
         point.setUpdatedAt(LocalDateTime.now());
         monitoringPointMapper.updateById(point);
     }
+
+    /**
+     * 获取当前选中的监测点
+     */
+    public MonitoringPoint getSelected() {
+        List<MonitoringPoint> selectedPoints = monitoringPointMapper.selectList(
+                new LambdaQueryWrapper<MonitoringPoint>()
+                        .eq(MonitoringPoint::getIsActive, true)
+                        .eq(MonitoringPoint::getIsSelected, true)
+                        .orderByDesc(MonitoringPoint::getUpdatedAt));
+        
+        if (selectedPoints.isEmpty()) {
+            // 如果没有选中的监测点，返回第一个激活的监测点
+            List<MonitoringPoint> activePoints = getAll();
+            if (!activePoints.isEmpty()) {
+                // 自动选中第一个监测点
+                MonitoringPoint firstPoint = activePoints.get(0);
+                updateSelected(firstPoint.getId());
+                return firstPoint;
+            } else {
+                // 如果没有监测点，返回null
+                return null;
+            }
+        }
+        
+        // 理论上应该只有一个选中的监测点，返回第一个
+        return selectedPoints.get(0);
+    }
+
+    /**
+     * 更新选中的监测点
+     */
+    public void updateSelected(String pointId) {
+        // 1. 先取消所有监测点的选中状态
+        List<MonitoringPoint> allPoints = getAll();
+        for (MonitoringPoint point : allPoints) {
+            if (Boolean.TRUE.equals(point.getIsSelected())) {
+                point.setIsSelected(false);
+                point.setUpdatedAt(LocalDateTime.now());
+                monitoringPointMapper.updateById(point);
+            }
+        }
+        
+        // 2. 设置指定监测点为选中状态
+        MonitoringPoint pointToSelect = getById(pointId);
+        pointToSelect.setIsSelected(true);
+        pointToSelect.setUpdatedAt(LocalDateTime.now());
+        monitoringPointMapper.updateById(pointToSelect);
+    }
 }

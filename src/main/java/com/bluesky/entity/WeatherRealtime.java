@@ -78,7 +78,7 @@ public class WeatherRealtime implements Serializable {
     /** 数据来源 */
     private String dataSource;
 
-    /** 数据质量分数(0-100) */
+    /** 数据质量: good/excellent/fair/poor 或 分数(0-100) */
     private Integer dataQuality;
 
     private LocalDateTime createdAt;

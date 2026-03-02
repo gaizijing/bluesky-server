@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
 import java.io.Serializable;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 /**
@@ -41,8 +42,8 @@ public class SuitabilityAnalysis implements Serializable {
     /** 是否适飞 */
     private Boolean isSuitable;
 
-    /** 异常值 */
-    private String abnormalValue;
+    /** 异常值（数值类型） */
+    private BigDecimal abnormalValue;
 
     private LocalDateTime createdAt;
 }

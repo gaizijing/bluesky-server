@@ -12,7 +12,7 @@ spring:
     driver-class-name: org.postgresql.Driver
     url: jdbc:postgresql://localhost:5432/bluesky?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
     username: postgres
-    password: postgres
+    password: 123456
     hikari:
       minimum-idle: 5
       maximum-pool-size: 20
@@ -88,3 +88,6 @@ logging:
     name: logs/bluesky-server.log
     max-size: 10MB
     max-history: 30
+  charset:
+    console: UTF-8
+    file: UTF-8

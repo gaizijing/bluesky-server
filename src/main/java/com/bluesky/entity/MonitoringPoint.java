@@ -32,6 +32,11 @@ public class MonitoringPoint implements Serializable {
     private String name;
 
     /**
+     * 监测点编号
+     */
+    private String code;
+
+    /**
      * 类型: takeoff/operation
      */
     private String type;
@@ -95,6 +100,11 @@ public class MonitoringPoint implements Serializable {
      * 是否激活
      */
     private Boolean isActive;
+
+    /**
+     * 是否被选中
+     */
+    private Boolean isSelected;
 
     /**
      * 创建时间
