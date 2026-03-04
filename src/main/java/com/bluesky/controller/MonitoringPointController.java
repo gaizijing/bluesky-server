@@ -139,7 +139,11 @@ public class MonitoringPointController {
         } else if (dto.getCoordinates() != null && dto.getCoordinates().size() >= 2) {
             point.setLongitude(dto.getCoordinates().get(0));
             point.setLatitude(dto.getCoordinates().get(1));
+        } else {
+            // 如果都没有，抛出异常或设置默认值
+            throw new IllegalArgumentException("坐标信息缺失，请提供longitude/latitude或coordinates字段");
         }
+
 
         // 解析 bbox（支持数组格式和对象格式）
         if (dto.hasValidBbox()) {

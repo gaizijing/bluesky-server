@@ -75,12 +75,23 @@ springdoc:
   # 扫描接口包
   packages-to-scan: com.bluesky.controller
 
+# ISIM模拟机集成配置
+isim:
+  host: 127.0.0.1           # ISIM IP地址
+  send-port: 8152           # 发送气象数据到ISIM的端口
+  receive-port: 8151        # 接收ISIM姿态数据的端口
+  send-interval: 1000       # 发送气象数据间隔（毫秒），0表示不自动发送
+  enabled: true             # 是否启用ISIM集成
+  websocket-path: /ws/isim-data  # WebSocket路径
+
 # 日志配置
 logging:
   level:
     root: INFO
     com.bluesky: DEBUG
     com.baomidou.mybatisplus: DEBUG
+    com.bluesky.isim: DEBUG  # ISIM相关日志
+    org.springframework.web.socket: INFO
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{50} - %msg%n"
     file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{50} - %msg%n"

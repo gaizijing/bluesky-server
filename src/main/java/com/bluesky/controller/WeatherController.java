@@ -98,6 +98,21 @@ public class WeatherController {
     }
 
     /**
+     * 获取天气预测热力图数据（通用接口）
+     * GET /api/weather/heatmap?pointId=POINT002&timeRange=3h&resolution=medium
+     */
+    @Operation(summary = "获取天气预测热力图数据（通用）", description = "获取天气热力图数据，支持点热力图和区域热力图")
+    @GetMapping("/heatmap")
+    public Result<Map<String, Object>> getWeatherHeatmap(
+            @Parameter(description = "监测点ID") @RequestParam(required = false) String pointId,
+            @Parameter(description = "时间范围，如：3h、6h、12h") @RequestParam(required = false, defaultValue = "3h") String timeRange,
+            @Parameter(description = "分辨率：low/medium/high") @RequestParam(required = false, defaultValue = "medium") String resolution,
+            @Parameter(description = "边界框 [minLng,minLat,maxLng,maxLat]") @RequestParam(required = false) String bounds,
+            @Parameter(description = "是否用于航路分析") @RequestParam(required = false, defaultValue = "false") Boolean forRouteAnalysis) {
+        return Result.success(weatherService.getWeatherHeatmap(pointId, timeRange, resolution, bounds, forRouteAnalysis));
+    }
+
+    /**
      * 获取地理空间热力图数据（用于Cesium地图）
      * GET /api/weather/heatmap/geo?pointId=point-1&time=2026-02-28T15:33:00&resolution=medium
      */
