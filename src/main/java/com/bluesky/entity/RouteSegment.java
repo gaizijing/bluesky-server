@@ -25,10 +25,10 @@ public class RouteSegment implements Serializable {
     private Integer sequence;
     private String startWaypointId;
     private String endWaypointId;
-    private BigDecimal distance;
+    private Double distance;
     private String windDirection;
-    private BigDecimal windSpeed;
-    private BigDecimal visibility;
+    private Double windSpeed;
+    private Double visibility;
     private String precipitation;
     private String riskLevel;
     private LocalDateTime createdAt;

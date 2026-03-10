@@ -50,28 +50,6 @@ public class WeatherController {
     }
 
     /**
-     * 获取3D风场数据(Cesium粒子渲染)
-     * GET /api/weather/wind-field?timeRange=...&height=100
-     */
-    @Operation(summary = "获取3D风场数据", description = "获取用于Cesium粒子系统渲染的三维风场矢量数据")
-    @GetMapping("/wind-field")
-    public Result<Map<String, Object>> getWindField(
-            @Parameter(description = "时间范围") @RequestParam(required = false) String timeRange,
-            @Parameter(description = "指定高度层(米),不传则返回所有高度层") @RequestParam(required = false) Integer height) {
-        return Result.success(weatherService.getWindField(timeRange, height));
-    }
-
-    /**
-     * 获取3D风场数据(简化接口，无参数)
-     * GET /api/weather/wind
-     */
-    @Operation(summary = "获取3D风场数据(简化)", description = "获取最新的三维风场矢量数据")
-    @GetMapping("/wind")
-    public Result<Map<String, Object>> getWindFieldSimple() {
-        return Result.success(weatherService.getWindField(null, null));
-    }
-
-    /**
      * 获取微尺度天气数据(热力图)
      * GET /api/weather/microscale?region=青岛中心区
      */
@@ -151,5 +129,18 @@ public class WeatherController {
             @Parameter(description = "时间范围") @RequestParam(required = false, defaultValue = "3h") String timeRange,
             @Parameter(description = "分辨率") @RequestParam(required = false, defaultValue = "medium") String resolution) {
         return Result.success(weatherService.getBatchWeatherHeatmap(areaIds, timeRange, resolution));
+    }
+
+    /**
+     * 获取全市范围热力图数据
+     * GET /api/weather/heatmap/citywide?totalHours=3&resolution=medium&baseTime=2026-03-09T10:00:00
+     */
+    @Operation(summary = "获取全市范围热力图数据", description = "获取全市范围内的风险分布热力图数据，支持时间参数")
+    @GetMapping("/heatmap/citywide")
+    public Result<Map<String, Object>> getCitywideHeatmap(
+            @Parameter(description = "总小时数，如：3、6、12") @RequestParam(required = false, defaultValue = "3") Integer totalHours,
+            @Parameter(description = "分辨率：low/medium/high") @RequestParam(required = false, defaultValue = "medium") String resolution,
+            @Parameter(description = "基准时间，ISO格式，如：2026-03-09T10:00:00") @RequestParam(required = false) String baseTime) {
+        return Result.success(weatherService.getCitywideHeatmap(totalHours, resolution, baseTime));
     }
 }

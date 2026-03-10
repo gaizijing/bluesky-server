@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.bluesky.entity.*;
 import com.bluesky.mapper.*;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -14,6 +15,7 @@ import java.util.*;
  * 气象数据服务
  * 负责实时天气、风向趋势、风场、微尺度天气等数据
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class WeatherService {
@@ -371,7 +373,7 @@ public class WeatherService {
      * 生成基于气象数据和阈值配置的风险热力图数据
      */
     private Map<String, Object> generateMockHeatmapData(String pointId, String timeRange, String resolution, String bounds, Boolean forRouteAnalysis) {
-        try {
+
             // 1. 获取实时气象数据
             Map<String, Object> weatherResult = getRealtimeWeather(pointId);
             WeatherRealtime weatherData = extractWeatherData(weatherResult);
@@ -485,10 +487,7 @@ public class WeatherService {
             
             return result;
             
-        } catch (Exception e) {
-            // 如果出现异常，返回基本的模拟数据
-            return generateBasicHeatmapData(pointId, timeRange, resolution, forRouteAnalysis);
-        }
+
     }
     
     /**
@@ -666,7 +665,7 @@ public class WeatherService {
      * 生成区域范围的热力图数据
      */
     private Map<String, Object> generateAreaHeatmapData(String pointId, String timeRange, String resolution, String bounds, Boolean forRouteAnalysis) {
-        try {
+
             // 解析边界框
             double[] bbox = parseBoundingBox(bounds);
             if (bbox == null) {
@@ -736,11 +735,6 @@ public class WeatherService {
             ));
             
             return result;
-            
-        } catch (Exception e) {
-            // 如果出现异常，返回基本的区域热力图数据
-            return generateBasicAreaHeatmapData(pointId, timeRange, resolution, bounds, forRouteAnalysis);
-        }
     }
     
     /**
@@ -820,8 +814,14 @@ public class WeatherService {
      * 生成时间标签
      */
     private List<String> generateTimeLabels(String timeRange, int timeCount) {
+        return generateTimeLabels(timeRange, timeCount, LocalDateTime.now());
+    }
+    
+    /**
+     * 生成时间标签（带基准时间）
+     */
+    private List<String> generateTimeLabels(String timeRange, int timeCount, LocalDateTime baseTime) {
         List<String> times = new ArrayList<>();
-        LocalDateTime baseTime = LocalDateTime.now();
         
         int interval = 30; // 默认30分钟间隔
         if ("1h".equals(timeRange)) interval = 10;
@@ -910,81 +910,6 @@ public class WeatherService {
         return Math.max(0.7, Math.min(1.3, factor));
     }
     
-    /**
-     * 生成基本的区域热力图数据（降级方案）
-     */
-    private Map<String, Object> generateBasicAreaHeatmapData(String pointId, String timeRange, String resolution, String bounds, Boolean forRouteAnalysis) {
-        // 简化的区域热力图数据
-        int gridSize = 8;
-        int timeCount = 7;
-        
-        List<String> times = generateTimeLabels(timeRange, timeCount);
-        List<Map<String, Object>> gridData = new ArrayList<>();
-        
-        double[] bbox = parseBoundingBox(bounds);
-        if (bbox == null) {
-            // 如果bounds解析失败，尝试根据pointId从数据库查询
-            if (pointId != null && !pointId.isEmpty()) {
-                try {
-                    MonitoringPoint point = monitoringPointService.getById(pointId);
-                    bbox = new double[]{
-                        point.getBboxMinLng().doubleValue(),
-                        point.getBboxMinLat().doubleValue(),
-                        point.getBboxMaxLng().doubleValue(),
-                        point.getBboxMaxLat().doubleValue()
-                    };
-                } catch (Exception e) {
-                    // 如果查询失败，使用默认边界
-                    bbox = new double[]{120.0, 36.0, 121.0, 37.0};
-                }
-            } else {
-                bbox = new double[]{120.0, 36.0, 121.0, 37.0}; // 默认边界
-            }
-        }
-        
-        for (int i = 0; i < gridSize; i++) {
-            for (int j = 0; j < gridSize; j++) {
-                double lng = bbox[0] + (bbox[2] - bbox[0]) * (i / (double) (gridSize - 1));
-                double lat = bbox[1] + (bbox[3] - bbox[1]) * (j / (double) (gridSize - 1));
-                
-                List<Integer> timeSeries = new ArrayList<>();
-                for (int t = 0; t < timeCount; t++) {
-                    int riskValue = 50 + (int)(Math.sin(i * 0.5 + j * 0.3 + t * 0.2) * 20);
-                    timeSeries.add(Math.max(20, Math.min(80, riskValue)));
-                }
-                
-                Map<String, Object> gridPoint = new HashMap<>();
-                gridPoint.put("lng", lng);
-                gridPoint.put("lat", lat);
-                gridPoint.put("x", i);
-                gridPoint.put("y", j);
-                gridPoint.put("riskData", Map.of(
-                    "timeSeries", timeSeries,
-                    "currentRisk", timeSeries.get(0)
-                ));
-                
-                gridData.add(gridPoint);
-            }
-        }
-        
-        Map<String, Object> result = new HashMap<>();
-        result.put("bounds", Arrays.toString(bbox));
-        result.put("gridSize", gridSize);
-        result.put("times", times);
-        result.put("gridData", gridData);
-        result.put("metadata", Map.of(
-            "pointId", pointId,
-            "timeRange", timeRange,
-            "resolution", resolution,
-            "forRouteAnalysis", forRouteAnalysis != null ? forRouteAnalysis : false,
-            "dataType", "basic_area_heatmap",
-            "unit", "风险指数(0-100)",
-            "calculationMethod", "basic_simulation",
-            "generatedAt", LocalDateTime.now().toString()
-        ));
-        
-        return result;
-    }
 
     /**
      * 生成图表热力图数据（时间-高度矩阵）
@@ -998,12 +923,10 @@ public class WeatherService {
      * 生成地理空间热力图数据（经纬度风险点）
      */
     private Map<String, Object> generateGeoHeatmapData(String bounds, String time, String resolution, String pointId) {
-        try {
+
             // 解析边界框
             double[] bbox = parseBoundingBox(bounds);
-            if (bbox == null) {
-                return generateBasicGeoHeatmapData(bounds, time, resolution, pointId);
-            }
+
             
             double minLng = bbox[0];
             double minLat = bbox[1];
@@ -1068,10 +991,7 @@ public class WeatherService {
             
             return result;
             
-        } catch (Exception e) {
-            // 降级方案
-            return generateBasicGeoHeatmapData(bounds, time, resolution, pointId);
-        }
+
     }
 
     /**
@@ -1084,113 +1004,189 @@ public class WeatherService {
         return "very_low";
     }
 
+
     /**
-     * 生成基本的地理空间热力图数据（降级方案）
+     * 获取全市范围热力图数据
+     * @param totalHours 总小时数（3, 6, 12）
+     * @param resolution 分辨率（low, medium, high）
+     * @param baseTime 基准时间（ISO格式），如果不传则使用当前时间
+     * @return 热力图数据
      */
-    private Map<String, Object> generateBasicGeoHeatmapData(String bounds, String time, String resolution, String pointId) {
-        // 简化的地理空间热力图数据
-        double[] bbox = parseBoundingBox(bounds);
-        if (bbox == null) {
-            // 如果bounds解析失败，尝试根据pointId从数据库查询
-            if (pointId != null && !pointId.isEmpty()) {
+    public Map<String, Object> getCitywideHeatmap(Integer totalHours, String resolution, String baseTime) {
+        try {
+            log.info("获取全市热力图，参数: totalHours={}, resolution={}, baseTime={}", 
+                totalHours, resolution, baseTime);
+            
+            // 青岛市的大致边界
+            String citywideBounds = "[120.0,36.0,121.0,37.0]";
+            String pointId = "citywide";
+            String timeRange = totalHours + "h";
+            
+            // 解析基准时间
+            LocalDateTime baseDateTime;
+            if (baseTime != null && !baseTime.isEmpty()) {
                 try {
-                    MonitoringPoint point = monitoringPointService.getById(pointId);
-                    bbox = new double[]{
-                        point.getBboxMinLng().doubleValue(),
-                        point.getBboxMinLat().doubleValue(),
-                        point.getBboxMaxLng().doubleValue(),
-                        point.getBboxMaxLat().doubleValue()
-                    };
+                    baseDateTime = LocalDateTime.parse(baseTime.replace("Z", ""));
                 } catch (Exception e) {
-                    // 如果查询失败，使用默认边界
-                    bbox = new double[]{120.0, 36.0, 121.0, 37.0};
+                    baseDateTime = LocalDateTime.now();
                 }
             } else {
-                bbox = new double[]{120.0, 36.0, 121.0, 37.0};
+                baseDateTime = LocalDateTime.now();
             }
+            
+            // 使用现有的区域热力图生成方法（传入基准时间）
+            Map<String, Object> heatmapData = generateAreaHeatmapData(pointId, timeRange, resolution, citywideBounds, false);
+            
+            // 转换数据格式为前端期望的points数组
+            List<Map<String, Object>> points = new ArrayList<>();
+            if (heatmapData.containsKey("gridData")) {
+                List<?> gridData = (List<?>) heatmapData.get("gridData");
+                for (Object obj : gridData) {
+                    if (obj instanceof Map) {
+                        Map<?, ?> gridPoint = (Map<?, ?>) obj;
+                        Double lng = (Double) gridPoint.get("lng");
+                        Double lat = (Double) gridPoint.get("lat");
+                        Map<?, ?> riskData = (Map<?, ?>) gridPoint.get("riskData");
+                        Integer riskValue = 50; // 默认值
+                        if (riskData != null) {
+                            Object currentRisk = riskData.get("currentRisk");
+                            if (currentRisk instanceof Integer) {
+                                riskValue = (Integer) currentRisk;
+                            } else if (currentRisk instanceof Number) {
+                                riskValue = ((Number) currentRisk).intValue();
+                            }
+                        }
+                        
+                        Map<String, Object> point = new HashMap<>();
+                        point.put("lon", lng);
+                        point.put("lat", lat);
+                        point.put("value", riskValue);
+                        points.add(point);
+                    }
+                }
+            }
+            
+            // 解析边界框
+            double[] bbox = parseBoundingBox(citywideBounds);
+            Map<String, Object> bounds = new HashMap<>();
+            if (bbox != null && bbox.length >= 4) {
+                bounds.put("minLon", bbox[0]);
+                bounds.put("minLat", bbox[1]);
+                bounds.put("maxLon", bbox[2]);
+                bounds.put("maxLat", bbox[3]);
+            } else {
+                bounds.put("minLon", 120.0);
+                bounds.put("minLat", 36.0);
+                bounds.put("maxLon", 121.0);
+                bounds.put("maxLat", 37.0);
+            }
+            
+            Map<String, Object> result = new HashMap<>();
+            result.put("points", points);
+            result.put("bounds", bounds);
+            result.put("timestamp", baseDateTime.toString()); // 使用传入的基准时间
+            result.put("resolution", resolution);
+            result.put("totalPoints", points.size());
+            result.put("baseTime", baseDateTime.toString()); // 明确返回使用的基准时间
+            
+            log.info("全市热力图生成成功，基准时间: {}, 点数: {}, 分辨率: {}", 
+                baseDateTime, points.size(), resolution);
+            
+            return result;
+        } catch (Exception e) {
+            // 降级方案：返回模拟数据
+            return generateMockCitywideHeatmapData(totalHours, resolution, baseTime);
+        }
+    }
+
+    /**
+     * 生成模拟的全市范围热力图数据（降级方案）
+     */
+    private Map<String, Object> generateMockCitywideHeatmapData(Integer totalHours, String resolution, String baseTime) {
+        log.warn("使用模拟热力图数据（降级方案），参数: totalHours={}, resolution={}, baseTime={}", 
+            totalHours, resolution, baseTime);
+        
+        // 解析基准时间
+        LocalDateTime baseDateTime;
+        if (baseTime != null && !baseTime.isEmpty()) {
+            try {
+                baseDateTime = LocalDateTime.parse(baseTime.replace("Z", ""));
+            } catch (Exception e) {
+                baseDateTime = LocalDateTime.now();
+            }
+        } else {
+            baseDateTime = LocalDateTime.now();
         }
         
-        int gridSize = 8;
+        // 青岛市边界
+        double minLon = 120.0;
+        double minLat = 36.0;
+        double maxLon = 121.0;
+        double maxLat = 37.0;
+        
+        // 根据分辨率确定网格密度
+        int gridSize;
+        if ("low".equals(resolution)) {
+            gridSize = 10;
+        } else if ("high".equals(resolution)) {
+            gridSize = 30;
+        } else {
+            gridSize = 20; // medium
+        }
+        
+        // 生成随机风险点
         List<Map<String, Object>> points = new ArrayList<>();
+        Random random = new Random(baseDateTime.hashCode()); // 使用基准时间作为随机种子，确保相同时间返回相同数据
         
         for (int i = 0; i < gridSize; i++) {
             for (int j = 0; j < gridSize; j++) {
-                double lng = bbox[0] + (bbox[2] - bbox[0]) * (i / (double) (gridSize - 1));
-                double lat = bbox[1] + (bbox[3] - bbox[1]) * (j / (double) (gridSize - 1));
+                double lon = minLon + (maxLon - minLon) * (i / (double) (gridSize - 1));
+                double lat = minLat + (maxLat - minLat) * (j / (double) (gridSize - 1));
                 
-                int riskValue = 50 + (int)(Math.sin(i * 0.5 + j * 0.3) * 20);
-                riskValue = Math.max(20, Math.min(80, riskValue));
+                // 基于时间生成风险值（模拟随时间变化）
+                // 早上风险较低，下午风险较高
+                int hour = baseDateTime.getHour();
+                double timeFactor = 0.5 + 0.5 * Math.sin(Math.PI * hour / 12.0);
+                
+                // 添加一些空间变化（模拟高风险区域）
+                double spatialFactor = 1.0;
+                if (lon > 120.4 && lon < 120.7 && lat > 36.4 && lat < 36.7) {
+                    spatialFactor = 1.8; // 市区风险较高
+                } else if (lon > 120.7 && lat > 36.7) {
+                    spatialFactor = 0.6; // 海边风险较低
+                }
+                
+                // 添加随机波动
+                double randomFactor = 0.8 + 0.4 * random.nextDouble();
+                
+                // 计算最终风险值 (0-100)
+                int riskValue = (int) Math.round(timeFactor * spatialFactor * randomFactor * 50);
+                riskValue = Math.min(100, Math.max(0, riskValue));
                 
                 Map<String, Object> point = new HashMap<>();
-                point.put("lon", lng);
+                point.put("lon", lon);
                 point.put("lat", lat);
                 point.put("value", riskValue);
-                point.put("x", i);
-                point.put("y", j);
-                point.put("riskLevel", getRiskLevel(riskValue));
-                
                 points.add(point);
             }
         }
         
+        Map<String, Object> bounds = new HashMap<>();
+        bounds.put("minLon", minLon);
+        bounds.put("minLat", minLat);
+        bounds.put("maxLon", maxLon);
+        bounds.put("maxLat", maxLat);
+        
         Map<String, Object> result = new HashMap<>();
         result.put("points", points);
-        result.put("bounds", Arrays.toString(bbox));
-        result.put("gridSize", gridSize);
-        result.put("pointCount", points.size());
-        result.put("metadata", Map.of(
-            "dataType", "basic_geo_heatmap",
-            "unit", "风险指数(0-100)",
-            "calculationMethod", "basic_simulation",
-            "generatedAt", LocalDateTime.now().toString()
-        ));
+        result.put("bounds", bounds);
+        result.put("timestamp", baseDateTime.toString());
+        result.put("resolution", resolution);
+        result.put("totalPoints", points.size());
+        result.put("baseTime", baseDateTime.toString());
+        result.put("isMockData", true); // 标记为模拟数据
         
         return result;
     }
 
-    /**
-     * 生成基本的热力图数据（降级方案）
-     */
-    private Map<String, Object> generateBasicHeatmapData(String pointId, String timeRange, String resolution, Boolean forRouteAnalysis) {
-        // 简化的热力图数据生成逻辑
-        int timeCount = 7;
-        int heightCount = 8;
-        
-        List<String> times = new ArrayList<>();
-        for (int i = 0; i < timeCount; i++) {
-            times.add(String.format("%02d:00", (i * 30) / 60));
-        }
-        
-        List<Integer> heights = new ArrayList<>();
-        for (int i = 0; i < heightCount; i++) {
-            heights.add(i * 50);
-        }
-        
-        List<List<Integer>> data = new ArrayList<>();
-        for (int h = 0; h < heightCount; h++) {
-            List<Integer> row = new ArrayList<>();
-            for (int t = 0; t < timeCount; t++) {
-                int riskValue = 50 + (int)(Math.sin(h * 0.5 + t * 0.3) * 20);
-                row.add(Math.max(20, Math.min(80, riskValue)));
-            }
-            data.add(row);
-        }
-        
-        Map<String, Object> result = new HashMap<>();
-        result.put("times", times);
-        result.put("heights", heights);
-        result.put("data", data);
-        result.put("metadata", Map.of(
-            "pointId", pointId,
-            "timeRange", timeRange,
-            "resolution", resolution,
-            "forRouteAnalysis", forRouteAnalysis != null ? forRouteAnalysis : false,
-            "dataType", "basic_flight_risk_heatmap",
-            "unit", "风险指数(0-100)",
-            "calculationMethod", "basic_simulation",
-            "generatedAt", LocalDateTime.now().toString()
-        ));
-        
-        return result;
-    }
 }

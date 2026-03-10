@@ -8,6 +8,7 @@ import com.bluesky.mapper.UserMapper;
 import com.bluesky.util.JwtUtil;
 import com.bluesky.vo.LoginResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
@@ -86,4 +87,5 @@ public class AuthService {
                 "admin",
                 Arrays.asList("dashboard", "setting", "map"));
     }
+
 }

@@ -22,16 +22,18 @@ public class Route implements Serializable {
     private String id;
 
     private String name;
-    private String startPointId;
-    private String endPointId;
     private String startName;
     private String endName;
-    private BigDecimal distance;
+    private Double distance;
     private Integer estimatedTime;
     private String weatherCondition;
     private String status;
-    private BigDecimal averageRisk;
+    private Double averageRisk;
     private Boolean isActive;
+    private String aircraftModel;
+    private Double flightHeight;
+    private LocalDateTime startTime;
+    private LocalDateTime endTime;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

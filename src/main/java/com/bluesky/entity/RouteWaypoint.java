@@ -24,8 +24,8 @@ public class RouteWaypoint implements Serializable {
     private String routeId;
     private Integer sequence;
     private String name;
-    private BigDecimal longitude;
-    private BigDecimal latitude;
-    private BigDecimal altitude;
+    private Double longitude;
+    private Double latitude;
+    private Double altitude;
     private LocalDateTime createdAt;
 }
