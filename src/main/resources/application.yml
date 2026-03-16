@@ -6,7 +6,7 @@ server:
 spring:
   application:
     name: bluesky-server
-  
+
   # 数据源配置
   datasource:
     driver-class-name: org.postgresql.Driver
@@ -21,8 +21,8 @@ spring:
       pool-name: BlueSkyHikariCP
       max-lifetime: 1800000
       connection-timeout: 30000
-  
-  # Jackson配置
+
+  # Jackson 时间格式
   jackson:
     time-zone: Asia/Shanghai
     date-format: yyyy-MM-dd HH:mm:ss
@@ -30,18 +30,19 @@ spring:
       write-dates-as-timestamps: false
     default-property-inclusion: non_null
 
-  # MVC 配置：打开 NoHandlerFoundException 以支持 404 全局捕获
+  # MVC 配置：让 404 进入全局异常处理
   mvc:
     throw-exception-if-no-handler-found: true
   web:
     resources:
       add-mappings: false
 
-# MyBatis-Plus配置
+# MyBatis-Plus 配置
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    # 关闭 SQL 控制台打印，避免日志刷屏
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
   global-config:
     db-config:
       id-type: assign_id
@@ -50,51 +51,99 @@ mybatis-plus:
       logic-not-delete-value: 0
   mapper-locations: classpath*:/mapper/**/*.xml
 
-# JWT配置
+# JWT 配置
 jwt:
   secret: bluesky-weather-flight-security-secret-key-2025
-  expiration: 86400000  # 24小时(毫秒)
+  expiration: 86400000  # 24小时（毫秒）
   header: Authorization
-  prefix: Bearer 
+  prefix: Bearer
 
-# Knife4j 配置（访问地址：http://localhost:8080/api/doc.html）
+# Knife4j 配置
 knife4j:
-  enable: true                # 开启增强模式（搜索、分组等）
+  enable: true
   setting:
-    language: zh_CN           # 界面语言
+    language: zh_CN
     enable-swagger-models: true
     enable-document-manage: true
     swagger-model-name: 数据模型
 
-# SpringDoc / OpenAPI 基础配置（Knife4j 依赖此配置）
+# SpringDoc 配置
 springdoc:
   api-docs:
     path: /v3/api-docs
   swagger-ui:
     path: /swagger-ui.html
-  # 扫描接口包
   packages-to-scan: com.bluesky.controller
 
-# ISIM模拟机集成配置
+# ISIM 模拟机配置
 isim:
-  host: 127.0.0.1           # ISIM IP地址
-  send-port: 8152           # 发送气象数据到ISIM的端口
-  receive-port: 8151        # 接收ISIM姿态数据的端口
-  send-interval: 1000       # 发送气象数据间隔（毫秒），0表示不自动发送
-  enabled: true             # 是否启用ISIM集成
-  websocket-path: /ws/isim-data  # WebSocket路径
+  host: 127.0.0.1
+  send-port: 8152
+  receive-port: 8151
+  send-interval: 1000
+  enabled: true
+  websocket-path: /ws/isim-data
 
 # 航线配置
 route:
-  max-history-count: 5  # 最大历史记录数
+  max-history-count: 5
+
+# 风场配置（单文件 + 多层 level）
+wind:
+  field:
+    # 需要返回的目标高度层（米）。系统会自动匹配文件中最近的 level。
+    # 例如返回 3 层：10,50,100
+    heights: 50,100,200,300,400,500,1000
+
+    # 本地单文件路径（一个文件里包含多个 level）
+    u-file: data/uwnd.nc
+    v-file: data/vwnd.nc
+
+    # 远端单文件下载地址（真实可用示例：NOAA PSL Reanalysis2 2026）
+    # 注意：该源的 level 是气压层（hPa），不是几何高度。
+    u-url: https://downloads.psl.noaa.gov/Datasets/ncep.reanalysis2/pressure/uwnd.2026.nc
+    v-url: https://downloads.psl.noaa.gov/Datasets/ncep.reanalysis2/pressure/vwnd.2026.nc
+
+    # 本地缺文件时是否自动下载
+    auto-download-if-missing: true
+
+    # 是否启用定时更新（服务重启后也会先执行一次更新）
+    auto-update-enabled: true
+    # 更新间隔：21600 秒 = 6 小时
+    update-interval-seconds: 21600
+
+    # 下载校验与超时
+    min-file-size-bytes: 1024
+    download-timeout-seconds: 600
+    # 后台下载线程数（下载在子线程执行，不阻塞主请求线程）
+    download-threads: 2
+    # 下载进度日志输出间隔（秒）
+    download-progress-log-interval-seconds: 5
+    # 下载缓冲区大小（字节），默认 1MB
+    download-buffer-size: 1048576
+
+    # 网格处理
+    # 插值倍数：1=不插值，2=放大到 2 倍网格
+    interpolation-scale: 1
+    # 返回前端网格大小
+    output-width: 64
+    output-height: 64
+
+    # 默认业务区域（当接口不传 bounds 时使用）
+    bounds:
+      west: 119.0
+      east: 122.0
+      south: 35.0
+      north: 37.0
 
 # 日志配置
 logging:
   level:
     root: INFO
     com.bluesky: DEBUG
-    com.baomidou.mybatisplus: DEBUG
-    com.bluesky.isim: DEBUG  # ISIM相关日志
+    com.baomidou.mybatisplus: WARN
+    org.mybatis: WARN
+    com.bluesky.isim: DEBUG
     org.springframework.web.socket: INFO
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{50} - %msg%n"

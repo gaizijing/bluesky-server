@@ -8,6 +8,7 @@ public class WindData {
 
     private WindComponent u;
     private WindComponent v;
+    private WindComponent speed;
 
     private int width;
     private int height;
@@ -19,6 +20,16 @@ public class WindData {
     public WindData(WindComponent u, WindComponent v, int width, int height, Bounds bounds) {
         this.u = u;
         this.v = v;
+        this.speed = null;
+        this.width = width;
+        this.height = height;
+        this.bounds = bounds;
+    }
+
+    public WindData(WindComponent u, WindComponent v, WindComponent speed, int width, int height, Bounds bounds) {
+        this.u = u;
+        this.v = v;
+        this.speed = speed;
         this.width = width;
         this.height = height;
         this.bounds = bounds;
@@ -38,6 +49,14 @@ public class WindData {
 
     public void setV(WindComponent v) {
         this.v = v;
+    }
+
+    public WindComponent getSpeed() {
+        return speed;
+    }
+
+    public void setSpeed(WindComponent speed) {
+        this.speed = speed;
     }
 
     public int getWidth() {

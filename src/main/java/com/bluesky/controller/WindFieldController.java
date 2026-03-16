@@ -2,7 +2,6 @@ package com.bluesky.controller;
 
 import com.bluesky.common.Result;
 import com.bluesky.service.WindFieldService;
-import com.bluesky.vo.WindFieldResponse;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -19,9 +18,9 @@ public class WindFieldController {
 
     @GetMapping
     public Result<Map<String, Object>> getWindField(
-            @RequestParam String time
+            @RequestParam(required = false) String bounds
     ){
-        Map<String, Object> data = windFieldService.getWindField(time);
+        Map<String, Object> data = windFieldService.getWindField(bounds);
         return Result.success(data);
     }
 }
