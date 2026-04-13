@@ -1,6 +1,7 @@
 package com.bluesky.controller;
 
 import com.bluesky.common.Result;
+import com.bluesky.config.RegionConfig;
 import com.bluesky.entity.MonitoringPoint;
 import com.bluesky.service.MonitoringPointService;
 import com.bluesky.service.WeatherService;
@@ -10,6 +11,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -24,6 +26,7 @@ public class WeatherController {
 
     private final WeatherService weatherService;
     private final MonitoringPointService monitoringPointService;
+    private final RegionConfig regionConfig;
 
     /**
      * 获取重点关注区域实时气象数据
@@ -51,7 +54,7 @@ public class WeatherController {
 
     /**
      * 获取微尺度天气数据(热力图)
-     * GET /api/weather/microscale?region=青岛中心区
+     * GET /api/weather/microscale?region={regionName}
      */
     @Operation(summary = "获取微尺度天气数据", description = "获取精细化网格化微尺度天气数据，用于风险热力图展示")
     @GetMapping("/microscale")
@@ -142,5 +145,23 @@ public class WeatherController {
             @Parameter(description = "分辨率：low/medium/high") @RequestParam(required = false, defaultValue = "medium") String resolution,
             @Parameter(description = "基准时间，ISO格式，如：2026-03-09T10:00:00") @RequestParam(required = false) String baseTime) {
         return Result.success(weatherService.getCitywideHeatmap(totalHours, resolution, baseTime));
+    }
+
+    /**
+     * 获取地区配置信息
+     * GET /api/weather/region-config
+     */
+    @Operation(summary = "获取地区配置信息", description = "获取当前系统配置的地区信息，包括地区名称和边界坐标")
+    @GetMapping("/region-config")
+    public Result<Map<String, Object>> getRegionConfig() {
+        Map<String, Object> config = new HashMap<>();
+        config.put("defaultName", regionConfig.getDefaultName());
+        Map<String, Double> bounds = new HashMap<>();
+        bounds.put("west", regionConfig.getBounds().getWest());
+        bounds.put("east", regionConfig.getBounds().getEast());
+        bounds.put("south", regionConfig.getBounds().getSouth());
+        bounds.put("north", regionConfig.getBounds().getNorth());
+        config.put("bounds", bounds);
+        return Result.success(config);
     }
 }

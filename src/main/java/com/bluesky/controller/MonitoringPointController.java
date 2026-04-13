@@ -50,37 +50,10 @@ public class MonitoringPointController {
     public Result<MonitoringPointDTO> getSelected() {
         MonitoringPoint selected = monitoringPointService.getSelected();
         
-        if (selected == null) {
-            // 如果没有监测点数据，创建一个默认区域
-            MonitoringPoint defaultPoint = createDefaultPoint();
-            // 保存到数据库
-            defaultPoint = monitoringPointService.add(defaultPoint);
-            // 设置为选中状态
-            monitoringPointService.updateSelected(defaultPoint.getId());
-            selected = defaultPoint;
-        }
-        
         return Result.success(MonitoringPointDTO.fromEntity(selected));
     }
 
-    private MonitoringPoint createDefaultPoint() {
-        MonitoringPoint point = new MonitoringPoint();
-        point.setId("point-default");
-        point.setName("青岛中心起降坪");
-        point.setType("takeoff");
-        point.setLocation("市南区-五四广场附近");
-        point.setLongitude(new java.math.BigDecimal("120.3835"));
-        point.setLatitude(new java.math.BigDecimal("36.0625"));
-        point.setBboxMinLng(new java.math.BigDecimal("120.3735"));
-        point.setBboxMinLat(new java.math.BigDecimal("36.0525"));
-        point.setBboxMaxLng(new java.math.BigDecimal("120.3935"));
-        point.setBboxMaxLat(new java.math.BigDecimal("36.0725"));
-        point.setStatus("available");
-        point.setIsActive(true);
-        point.setIsSelected(true); // 默认选中
-        point.setLastUpdate(System.currentTimeMillis());
-        return point;
-    }
+ 
 
     /**
      * 更新选中的重点关注区域
@@ -132,19 +105,10 @@ public class MonitoringPointController {
         point.setType(dto.getType());
         point.setLocation(dto.getLocation());
 
-        // 优先使用直接的 longitude/latitude 字段，如果没有则解析 coordinates 数组
-        if (dto.getLongitude() != null && dto.getLatitude() != null) {
+       
             point.setLongitude(dto.getLongitude());
             point.setLatitude(dto.getLatitude());
-        } else if (dto.getCoordinates() != null && dto.getCoordinates().size() >= 2) {
-            point.setLongitude(dto.getCoordinates().get(0));
-            point.setLatitude(dto.getCoordinates().get(1));
-        } else {
-            // 如果都没有，抛出异常或设置默认值
-            throw new IllegalArgumentException("坐标信息缺失，请提供longitude/latitude或coordinates字段");
-        }
-
-
+    
         // 解析 bbox（支持数组格式和对象格式）
         if (dto.hasValidBbox()) {
             point.setBboxMinLng(dto.getBboxMinLng());
@@ -152,15 +116,10 @@ public class MonitoringPointController {
             point.setBboxMaxLng(dto.getBboxMaxLng());
             point.setBboxMaxLat(dto.getBboxMaxLat());
         }
-
         point.setAltitude(dto.getAltitude());
         // 状态值映射：前端可能是中文，需要转换为英文存储
         point.setStatus(convertStatusToEnglish(dto.getStatus()));
-        point.setWarningReason(dto.getWarningReason());
-        point.setLastUpdate(dto.getLastUpdate());
-        point.setIsActive(dto.getIsActive());
-        point.setCreatedBy(dto.getCreatedBy());
-        point.setUpdatedBy(dto.getUpdatedBy());
+
 
         return point;
     }

@@ -86,20 +86,9 @@ public class MonitoringPoint implements Serializable {
      */
     private String status;
 
-    /**
-     * 警告原因
-     */
-    private String warningReason;
 
-    /**
-     * 最后更新时间戳(毫秒)
-     */
-    private Long lastUpdate;
 
-    /**
-     * 是否激活
-     */
-    private Boolean isActive;
+
 
     /**
      * 是否被选中
@@ -116,13 +105,5 @@ public class MonitoringPoint implements Serializable {
      */
     private LocalDateTime updatedAt;
 
-    /**
-     * 创建人
-     */
-    private String createdBy;
 
-    /**
-     * 更新人
-     */
-    private String updatedBy;
 }

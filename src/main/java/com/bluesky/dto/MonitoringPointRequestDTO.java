@@ -25,17 +25,21 @@ public class MonitoringPointRequestDTO implements Serializable {
     private String location;
     private BigDecimal longitude;
     private BigDecimal latitude;
-    private List<BigDecimal> coordinates;
-
+    private BigDecimal bboxMaxLat;
+    private BigDecimal bboxMaxLng;
+    private BigDecimal bboxMinLat;
+    private BigDecimal bboxMinLng;
     // bbox 支持多种格式：
     // 1. 数组格式: [[minLng, minLat], [maxLng, maxLat]]
     // 2. 对象格式: {west, south, east, north} 或 {minLng, minLat, maxLng, maxLat}
     // 3. Map格式
+    // 4. 直接字段格式: bboxMinLng, bboxMinLat, bboxMaxLng, bboxMaxLat
     @JsonProperty("bbox")
     private Object bboxRaw;
     
     // 内部使用的对象格式
     private BboxObject bboxObject;
+
 
     @Data
     public static class BboxObject implements Serializable {
@@ -48,24 +52,27 @@ public class MonitoringPointRequestDTO implements Serializable {
 
     private BigDecimal altitude;
     private String status;
-    private String warningReason;
-    private Long lastUpdate;
-    private Boolean isActive;
-    private String createdBy;
-    private String updatedBy;
+
 
     /**
      * 判断是否包含有效的 bbox 数据
      */
     public boolean hasValidBbox() {
-        return bboxRaw != null || (bboxObject != null && bboxObject.getWest() != null);
+        return bboxRaw != null || 
+               (bboxObject != null && bboxObject.getWest() != null) ||
+               (bboxMinLng != null && bboxMinLat != null && bboxMaxLng != null && bboxMaxLat != null);
     }
 
     /**
      * 获取 bbox 的最小经度
      */
     public BigDecimal getBboxMinLng() {
-        // 首先检查bboxObject
+        // 首先检查直接的边界框字段
+        if (bboxMinLng != null) {
+            return bboxMinLng;
+        }
+        
+        // 检查bboxObject
         if (bboxObject != null && bboxObject.getWest() != null) {
             return bboxObject.getWest();
         }
@@ -100,7 +107,12 @@ public class MonitoringPointRequestDTO implements Serializable {
      * 获取 bbox 的最小纬度
      */
     public BigDecimal getBboxMinLat() {
-        // 首先检查bboxObject
+        // 首先检查直接的边界框字段
+        if (bboxMinLat != null) {
+            return bboxMinLat;
+        }
+        
+        // 检查bboxObject
         if (bboxObject != null && bboxObject.getSouth() != null) {
             return bboxObject.getSouth();
         }
@@ -135,7 +147,12 @@ public class MonitoringPointRequestDTO implements Serializable {
      * 获取 bbox 的最大经度
      */
     public BigDecimal getBboxMaxLng() {
-        // 首先检查bboxObject
+        // 首先检查直接的边界框字段
+        if (bboxMaxLng != null) {
+            return bboxMaxLng;
+        }
+        
+        // 检查bboxObject
         if (bboxObject != null && bboxObject.getEast() != null) {
             return bboxObject.getEast();
         }
@@ -170,7 +187,12 @@ public class MonitoringPointRequestDTO implements Serializable {
      * 获取 bbox 的最大纬度
      */
     public BigDecimal getBboxMaxLat() {
-        // 首先检查bboxObject
+        // 首先检查直接的边界框字段
+        if (bboxMaxLat != null) {
+            return bboxMaxLat;
+        }
+        
+        // 检查bboxObject
         if (bboxObject != null && bboxObject.getNorth() != null) {
             return bboxObject.getNorth();
         }

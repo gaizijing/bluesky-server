@@ -1,7 +1,6 @@
 package com.bluesky.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
-import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
@@ -10,61 +9,51 @@ import java.io.Serializable;
 import java.time.LocalDateTime;
 
 /**
- * 用户实体类
+ * 地区配置实体类
  *
  * @author BlueSky Team
  */
 @Data
-@TableName("users")
-public class User implements Serializable {
+@TableName("region_config")
+public class RegionConfigEntity implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
     /**
-     * 用户ID
+     * 主键ID
      */
-    @TableId(type = IdType.ASSIGN_ID)
-    private String id;
+    @TableId(type = IdType.AUTO)
+    private Long id;
 
     /**
-     * 用户名
-     */
-    private String username;
-
-    /**
-     * 密码
-     */
-    private String password;
-
-    /**
-     * 真实姓名
+     * 地区名称
      */
     private String name;
 
     /**
-     * 邮箱
+     * 西边界经度
      */
-    private String email;
+    private Double west;
 
     /**
-     * 手机号
+     * 东边界经度
      */
-    private String phone;
+    private Double east;
 
     /**
-     * 状态: active/inactive/locked
+     * 南边界纬度
      */
-    private String status;
+    private Double south;
 
     /**
-     * 最后登录时间
+     * 北边界纬度
      */
-    private LocalDateTime lastLoginTime;
+    private Double north;
 
     /**
-     * 登录次数
+     * 是否为默认配置
      */
-    private Integer loginCount;
+    private Boolean isDefault;
 
     /**
      * 创建时间
@@ -85,9 +74,4 @@ public class User implements Serializable {
      * 更新人
      */
     private String updatedBy;
-
-    /**
-     * 用户角色: admin/user
-     */
-    private String role;
 }

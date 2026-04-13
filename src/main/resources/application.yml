@@ -136,6 +136,27 @@ wind:
       south: 35.0
       north: 37.0
 
+# 地区配置
+# region:
+#   # 默认地区名称
+#   default-name: 青岛
+#   # 默认地区边界（经纬度）
+#   bounds:
+#     west: 120.0
+#     east: 121.0
+#     south: 36.0
+#     north: 37.0
+#北京
+# 地区配置
+region:
+  # 默认地区名称
+  default-name: 天津宁河区  # 改为你需要的地区名称
+  # 默认地区边界（经纬度）
+  bounds:
+    west: 117.4  # 改为目标地区的西边界经度
+    east: 118.1  # 改为目标地区的东边界经度
+    south: 39.1  # 改为目标地区的南边界纬度
+    north: 39.5  # 改为目标地区的北边界纬度
 # 日志配置
 logging:
   level:

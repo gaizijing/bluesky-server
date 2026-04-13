@@ -64,7 +64,7 @@ public class AuthService {
                 user.getId(),
                 user.getUsername(),
                 user.getName(),
-                "admin", // 这里简化处理,实际应从角色表查询
+                user.getRole() != null ? user.getRole() : "user", // 使用用户表中的role字段
                 Arrays.asList("dashboard", "setting", "map") // 这里简化处理,实际应从权限表查询
         );
 
@@ -84,7 +84,7 @@ public class AuthService {
                 user.getId(),
                 user.getUsername(),
                 user.getName(),
-                "admin",
+                user.getRole() != null ? user.getRole() : "user",
                 Arrays.asList("dashboard", "setting", "map"));
     }
 
