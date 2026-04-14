@@ -1,16 +1,16 @@
-# 忽略Maven构建目录
-target/
-!.mvn/wrapper/maven-wrapper.jar
+# 忽略data目录
+data/
 
-# 忽略IDE配置文件
+# 忽略IDE生成的文件
 .idea/
-*.iml
-*.iws
-*.ipr
 .vscode/
-.settings/
-.classpath
-.project
+
+# 忽略构建产物
+target/
+build/
+
+# 忽略依赖文件
+node_modules/
 
 # 忽略日志文件
 logs/
@@ -18,17 +18,8 @@ logs/
 
 # 忽略临时文件
 *.tmp
-*.bak
-*.swp
-*~.nib
+*.temp
 
-# 忽略操作系统文件
+# 忽略OS生成的文件
 .DS_Store
 Thumbs.db
-
-# 忽略编译文件
-*.class
-*.jar
-*.war
-*.ear
-
