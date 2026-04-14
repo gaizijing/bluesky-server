@@ -23,7 +23,6 @@ import java.util.*;
 public class SuitabilityService {
 
     private final SuitabilityAnalysisMapper suitabilityAnalysisMapper;
-    private final CoreIndicatorMapper coreIndicatorMapper;
     private final VerticalProfileMapper verticalProfileMapper;
     private final WeatherRealtimeMapper weatherRealtimeMapper;
     private final AircraftLimitMapper aircraftLimitMapper;
@@ -374,31 +373,6 @@ public class SuitabilityService {
         result.put("timePoint", timePoint);
         result.put("factor", factor);
         result.put("data", list);
-        return result;
-    }
-
-    // ==================== 核心气象要素 ====================
-
-    /**
-     * 获取核心气象要素监测数据
-     */
-    public Map<String, Object> getCoreIndicators(String pointId) {
-        List<CoreIndicator> indicators = coreIndicatorMapper.selectList(
-                new LambdaQueryWrapper<CoreIndicator>()
-                        .eq(pointId != null, CoreIndicator::getPointId, pointId)
-                        .orderByDesc(CoreIndicator::getDataTime)
-                        .last("LIMIT 50"));
-
-        // 取每种要素的最新记录
-        Map<String, CoreIndicator> latestMap = new LinkedHashMap<>();
-        for (CoreIndicator item : indicators) {
-            latestMap.putIfAbsent(item.getIndicatorId(), item);
-        }
-
-        Map<String, Object> result = new HashMap<>();
-        result.put("updateTime", LocalDateTime.now().toString());
-        result.put("pointId", pointId);
-        result.put("indicators", new ArrayList<>(latestMap.values()));
         return result;
     }
 

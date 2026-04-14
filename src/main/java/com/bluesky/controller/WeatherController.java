@@ -53,18 +53,6 @@ public class WeatherController {
     }
 
     /**
-     * 获取微尺度天气数据(热力图)
-     * GET /api/weather/microscale?region={regionName}
-     */
-    @Operation(summary = "获取微尺度天气数据", description = "获取精细化网格化微尺度天气数据，用于风险热力图展示")
-    @GetMapping("/microscale")
-    public Result<Map<String, Object>> getMicroscaleWeather(
-            @Parameter(description = "区域名称") @RequestParam(required = false) String region,
-            @Parameter(description = "时间范围") @RequestParam(required = false) String timeRange) {
-        return Result.success(weatherService.getMicroscaleWeather(region, timeRange));
-    }
-
-    /**
      * 获取天气预测热力图数据（用于ECharts图表）
      * GET /api/weather/heatmap/chart?pointId=POINT003&timeRange=3h&resolution=medium
      */
@@ -95,14 +83,13 @@ public class WeatherController {
 
     /**
      * 获取地理空间热力图数据（用于Cesium地图）
-     * GET /api/weather/heatmap/geo?pointId=point-1&time=2026-02-28T15:33:00&resolution=medium
+     * GET /api/weather/heatmap/geo?pointId=point-1&time=2026-02-28T15:33:00
      */
     @Operation(summary = "获取地理空间热力图数据（地图）", description = "获取区域风险分布数据，用于Cesium地图热力图展示")
     @GetMapping("/heatmap/geo")
     public Result<Map<String, Object>> getWeatherHeatmapGeo(
             @Parameter(description = "监测点ID") @RequestParam String pointId,
-            @Parameter(description = "时间，ISO格式") @RequestParam(required = false) String time,
-            @Parameter(description = "分辨率：low/medium/high") @RequestParam(required = false, defaultValue = "medium") String resolution) {
+            @Parameter(description = "时间，ISO格式") @RequestParam(required = false) String time) {
         
         // 根据 pointId 查询监测点信息，获取边界框
         MonitoringPoint point = monitoringPointService.getById(pointId);
@@ -118,7 +105,7 @@ public class WeatherController {
             point.getBboxMinLng(), point.getBboxMinLat(),
             point.getBboxMaxLng(), point.getBboxMaxLat());
         
-        return Result.success(weatherService.getWeatherHeatmapGeo(bounds, time, resolution, pointId));
+        return Result.success(weatherService.getWeatherHeatmapGeo(bounds, time, pointId));
     }
 
     /**
@@ -140,11 +127,8 @@ public class WeatherController {
      */
     @Operation(summary = "获取全市范围热力图数据", description = "获取全市范围内的风险分布热力图数据，支持时间参数")
     @GetMapping("/heatmap/citywide")
-    public Result<Map<String, Object>> getCitywideHeatmap(
-            @Parameter(description = "总小时数，如：3、6、12") @RequestParam(required = false, defaultValue = "3") Integer totalHours,
-            @Parameter(description = "分辨率：low/medium/high") @RequestParam(required = false, defaultValue = "medium") String resolution,
-            @Parameter(description = "基准时间，ISO格式，如：2026-03-09T10:00:00") @RequestParam(required = false) String baseTime) {
-        return Result.success(weatherService.getCitywideHeatmap(totalHours, resolution, baseTime));
+    public Result<Map<String, Object>> getCitywideHeatmap() {
+        return Result.success(weatherService.getCitywideHeatmap());
     }
 
     /**

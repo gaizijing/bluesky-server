@@ -1,6 +1,7 @@
 package com.bluesky.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
@@ -21,8 +22,9 @@ public class MicroscaleWeather implements Serializable {
     @TableId(type = IdType.AUTO)
     private Long id;
 
-    /** 区域名称 */
-    private String region;
+    /** 监测点ID */
+    @TableField("point_id")
+    private String pointId;
 
     /** 数据时间 */
     private LocalDateTime dataTime;
