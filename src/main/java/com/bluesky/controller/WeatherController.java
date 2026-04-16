@@ -15,8 +15,8 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * 气象数据控制器
- * 涵盖实时天气、风向趋势、3D风场、微尺度天气
+ * 常规气象数据
+ * 
  */
 @Tag(name = "气象数据", description = "实时天气、风向趋势、3D风场、微尺度天气等接口")
 @RestController
@@ -37,48 +37,6 @@ public class WeatherController {
     public Result<Map<String, Object>> getRealtimeWeather(
             @Parameter(description = "重点关注区域ID") @RequestParam String pointId) {
         return Result.success(weatherService.getRealtimeWeather(pointId));
-    }
-
-    /**
-     * 获取风向趋势数据(用于折线图)
-     * GET /api/weather/wind-trend?pointId=point-1&timeRange=2025-11-03
-     * 00:00:00,2025-11-03 23:59:59
-     */
-    @Operation(summary = "获取风向趋势数据", description = "获取指定时间范围内的风速风向趋势数据,用于图表展示")
-    @GetMapping("/wind-trend")
-    public Result<Map<String, Object>> getWindTrend(
-            @Parameter(description = "重点关注区域ID") @RequestParam String pointId,
-            @Parameter(description = "时间范围，格式: 开始时间,结束时间") @RequestParam String timeRange) {
-        return Result.success(weatherService.getWindTrend(pointId, timeRange));
-    }
-
-    /**
-     * 获取天气预测热力图数据（用于ECharts图表）
-     * GET /api/weather/heatmap/chart?pointId=POINT003&timeRange=3h&resolution=medium
-     */
-    @Operation(summary = "获取天气预测热力图数据（图表）", description = "获取时间-高度风险矩阵数据，用于ECharts热力图展示")
-    @GetMapping("/heatmap/chart")
-    public Result<Map<String, Object>> getWeatherHeatmapChart(
-            @Parameter(description = "监测点ID") @RequestParam(required = false) String pointId,
-            @Parameter(description = "时间范围，如：3h、6h、12h") @RequestParam(required = false, defaultValue = "3h") String timeRange,
-            @Parameter(description = "分辨率：low/medium/high") @RequestParam(required = false, defaultValue = "medium") String resolution,
-            @Parameter(description = "是否用于航路分析") @RequestParam(required = false, defaultValue = "false") Boolean forRouteAnalysis) {
-        return Result.success(weatherService.getWeatherHeatmapChart(pointId, timeRange, resolution, forRouteAnalysis));
-    }
-
-    /**
-     * 获取天气预测热力图数据（通用接口）
-     * GET /api/weather/heatmap?pointId=POINT002&timeRange=3h&resolution=medium
-     */
-    @Operation(summary = "获取天气预测热力图数据（通用）", description = "获取天气热力图数据，支持点热力图和区域热力图")
-    @GetMapping("/heatmap")
-    public Result<Map<String, Object>> getWeatherHeatmap(
-            @Parameter(description = "监测点ID") @RequestParam(required = false) String pointId,
-            @Parameter(description = "时间范围，如：3h、6h、12h") @RequestParam(required = false, defaultValue = "3h") String timeRange,
-            @Parameter(description = "分辨率：low/medium/high") @RequestParam(required = false, defaultValue = "medium") String resolution,
-            @Parameter(description = "边界框 [minLng,minLat,maxLng,maxLat]") @RequestParam(required = false) String bounds,
-            @Parameter(description = "是否用于航路分析") @RequestParam(required = false, defaultValue = "false") Boolean forRouteAnalysis) {
-        return Result.success(weatherService.getWeatherHeatmap(pointId, timeRange, resolution, bounds, forRouteAnalysis));
     }
 
     /**
@@ -108,18 +66,6 @@ public class WeatherController {
         return Result.success(weatherService.getWeatherHeatmapGeo(bounds, time, pointId));
     }
 
-    /**
-     * 批量获取天气热力图数据
-     * GET /api/weather/heatmap/batch?areaIds=point-1,point-2,point-3&timeRange=3h&resolution=medium
-     */
-    @Operation(summary = "批量获取天气热力图数据", description = "批量获取多个区域的天气热力图数据，用于航路分析")
-    @GetMapping("/heatmap/batch")
-    public Result<Map<String, Object>> getBatchWeatherHeatmap(
-            @Parameter(description = "区域ID列表，逗号分隔") @RequestParam String areaIds,
-            @Parameter(description = "时间范围") @RequestParam(required = false, defaultValue = "3h") String timeRange,
-            @Parameter(description = "分辨率") @RequestParam(required = false, defaultValue = "medium") String resolution) {
-        return Result.success(weatherService.getBatchWeatherHeatmap(areaIds, timeRange, resolution));
-    }
 
     /**
      * 获取全市范围热力图数据
@@ -147,5 +93,16 @@ public class WeatherController {
         bounds.put("north", regionConfig.getBounds().getNorth());
         config.put("bounds", bounds);
         return Result.success(config);
+    }
+
+    /**
+     * 获取天气预测趋势数据
+     * GET /weather/forecast-trend?pointId=point-1
+     */
+    @Operation(summary = "获取天气预测趋势数据", description = "调用 Open-Meteo API 获取 15 分钟间隔的天气预测数据，包括降水量、风速、能见度")
+    @GetMapping("/forecast-trend")
+    public Result<Map<String, Object>> getWeatherForecastTrend(
+            @Parameter(description = "重点关注区域ID") @RequestParam String pointId) {
+        return Result.success(weatherService.getWeatherForecastTrend(pointId));
     }
 }

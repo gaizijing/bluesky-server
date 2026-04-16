@@ -31,19 +31,9 @@ public class SuitabilityController {
     public Result<Map<String, Object>> getSuitabilityStatus(
             @Parameter(description = "重点关注区域ID") @RequestParam(required = false) String pointId,
             @Parameter(description = "气象因素: 综合/风/风切变/颠簸指数/湍流/降水/能见度") @RequestParam(required = false) String factor,
-            @Parameter(description = "预测总时长(小时),默认24") @RequestParam(required = false, defaultValue = "24") Integer totalHours) {
+            @Parameter(description = "预测总时长(小时),默认24") @RequestParam(required = false, defaultValue = "3") Integer totalHours) {
         return Result.success(suitabilityService.getSuitabilityStatus(pointId, factor, totalHours));
     }
 
-    /**
-     * 获取适飞热力图 - 空间区域
-     * GET /api/suitability/heatmap?timePoint=2025-11-03T14:00:00&factor=综合
-     */
-    @Operation(summary = "获取适飞热力图数据", description = "获取指定时间点的空间维度适飞热力图数据")
-    @GetMapping("/heatmap")
-    public Result<Map<String, Object>> getSuitabilityHeatmap(
-            @Parameter(description = "时间点,ISO格式") @RequestParam(required = false) String timePoint,
-            @Parameter(description = "气象因素") @RequestParam(required = false) String factor) {
-        return Result.success(suitabilityService.getSuitabilityHeatmap(timePoint, factor));
-    }
+   
 }

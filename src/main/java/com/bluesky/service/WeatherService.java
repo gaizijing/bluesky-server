@@ -4,13 +4,29 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.bluesky.config.RegionConfig;
 import com.bluesky.entity.*;
 import com.bluesky.mapper.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
 
+import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
+import java.io.InputStreamReader;
+import java.io.IOException;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.*;
+import java.util.zip.GZIPInputStream;
 
 /**
  * 气象数据服务
@@ -22,8 +38,8 @@ import java.util.*;
 public class WeatherService {
 
     private final WeatherRealtimeMapper weatherRealtimeMapper;
-    private final WindTrendMapper windTrendMapper;
     private final MicroscaleWeatherMapper microscaleWeatherMapper;
+    private final WeatherForecastMapper weatherForecastMapper;
     private final AircraftLimitMapper aircraftLimitMapper;
     private final MonitoringPointService monitoringPointService;
     private final RegionConfig regionConfig;
@@ -35,7 +51,7 @@ public class WeatherService {
      * 先查数据库，如果没有则调用和风天气API
      */
     public Map<String, Object> getRealtimeWeather(String pointId) {
-        // 1. 先查数据库
+        // 1. 先查数据库 指定id的最新的实时数据1条
         WeatherRealtime latest = weatherRealtimeMapper.selectOne(
                 new LambdaQueryWrapper<WeatherRealtime>()
                         .eq(WeatherRealtime::getPointId, pointId)
@@ -69,7 +85,6 @@ public class WeatherService {
             newRecord.setObsTime(LocalDateTime.now());
             newRecord.setTemp(new BigDecimal(weatherData.get("temp").toString()));
             newRecord.setFeelsLike(new BigDecimal(weatherData.get("feelsLike").toString()));
-            newRecord.setIcon(weatherData.get("icon").toString());
             newRecord.setText(weatherData.get("text").toString());
             newRecord.setWind360(Integer.parseInt(weatherData.get("wind360").toString()));
             newRecord.setWindDir(weatherData.get("windDir").toString());
@@ -96,7 +111,7 @@ public class WeatherService {
             return result;
 
         } catch (Exception e) {
-            // 5. API调用失败，返回数据库中的旧数据或模拟数据
+            // 5. API调用失败，返回数据库中的旧数据
             if (latest != null) {
                 Map<String, Object> result = new HashMap<>();
                 result.put("updateTime", LocalDateTime.now().toString());
@@ -104,27 +119,8 @@ public class WeatherService {
                 return result;
             }
 
-            // 6. 连数据库都没有数据，返回模拟数据
-            return generateMockWeatherData(pointId);
         }
-    }
-
-    /**
-     * 获取风向趋势数据(用于折线图)
-     */
-    public Map<String, Object> getWindTrend(String pointId, String timeRange) {
-        LocalDateTime[] range = parseTimeRange(timeRange);
-        List<WindTrend> trends = windTrendMapper.selectList(
-                new LambdaQueryWrapper<WindTrend>()
-                        .eq(WindTrend::getPointId, pointId)
-                        .between(WindTrend::getDataTime, range[0], range[1])
-                        .orderByAsc(WindTrend::getDataTime));
-
-        Map<String, Object> result = new HashMap<>();
-        result.put("updateTime", LocalDateTime.now().toString());
-        result.put("pointId", pointId);
-        result.put("data", trends);
-        return result;
+        return null;
     }
 
     /**
@@ -149,25 +145,6 @@ public class WeatherService {
     }
 
     /**
-     * 获取天气预测热力图数据（图表用）
-     */
-    public Map<String, Object> getWeatherHeatmapChart(String pointId, String timeRange, String resolution, Boolean forRouteAnalysis) {
-        // 生成时间-高度矩阵数据（给ECharts图表用）
-        Map<String, Object> heatmapData = generateChartHeatmapData(pointId, timeRange, resolution, forRouteAnalysis);
-
-        Map<String, Object> result = new HashMap<>();
-        result.put("updateTime", LocalDateTime.now().toString());
-        result.put("pointId", pointId);
-        result.put("timeRange", timeRange);
-        result.put("resolution", resolution);
-        result.put("forRouteAnalysis", forRouteAnalysis != null ? forRouteAnalysis : false);
-        result.put("data", heatmapData);
-        result.put("dataType", "chart_heatmap");
-
-        return result;
-    }
-
-    /**
      * 通用热力图生成方法
      *
      * @param bounds   边界框坐标，格式：[minLng,minLat,maxLng,maxLat]
@@ -177,17 +154,11 @@ public class WeatherService {
     private Map<String, Object> generateCommonHeatmapData(String bounds, List<String> pointIds) {
         // 解析边界框
         double[] bbox = parseBoundingBox(bounds);
-        double minLng = bbox[0];
-        double minLat = bbox[1];
-        double maxLng = bbox[2];
-        double maxLat = bbox[3];
-
 
         // 获取阈值配置
         // 生成热力图数据
         List<Map<String, Object>> points = new ArrayList<>();
         // 获取数据库中的真实气象数据点
-        List<MicroscaleWeather> weatherPoints = new ArrayList<>();
         if (pointIds != null && !pointIds.isEmpty()) {
             // 查询指定监测点的数据
             for (String pointId : pointIds) {
@@ -196,19 +167,19 @@ public class WeatherService {
                 if (p == null || p.getBboxMinLng() == null || p.getBboxMaxLng() == null) {
                     continue;
                 }
-                
+
                 double pointMinLng = p.getBboxMinLng().doubleValue();
                 double pointMinLat = p.getBboxMinLat().doubleValue();
                 double pointMaxLng = p.getBboxMaxLng().doubleValue();
                 double pointMaxLat = p.getBboxMaxLat().doubleValue();
-                
+
                 List<MicroscaleWeather> weatherList = getWeatherPointsFromDatabase(pointId, bbox);
-                for(MicroscaleWeather weather : weatherList){
+                for (MicroscaleWeather weather : weatherList) {
                     // 计算经纬度坐标（基于网格坐标和该监测点的边界框）
                     int gridSize = weather.getGridSize() != null ? weather.getGridSize() : 10;
                     double gridX = weather.getGridX() != null ? weather.getGridX().doubleValue() : 0;
                     double gridY = weather.getGridY() != null ? weather.getGridY().doubleValue() : 0;
-                    
+
                     double lng = pointMinLng + (pointMaxLng - pointMinLng) * (gridX / (double) (gridSize - 1));
                     double lat = pointMinLat + (pointMaxLat - pointMinLat) * (gridY / (double) (gridSize - 1));
 
@@ -236,19 +207,19 @@ public class WeatherService {
                 if (p.getBboxMinLng() == null || p.getBboxMaxLng() == null) {
                     continue;
                 }
-                
+
                 double pointMinLng = p.getBboxMinLng().doubleValue();
                 double pointMinLat = p.getBboxMinLat().doubleValue();
                 double pointMaxLng = p.getBboxMaxLng().doubleValue();
                 double pointMaxLat = p.getBboxMaxLat().doubleValue();
-                
+
                 List<MicroscaleWeather> weatherList = getWeatherPointsFromDatabase(p.getId(), bbox);
-                for(MicroscaleWeather weather : weatherList){
+                for (MicroscaleWeather weather : weatherList) {
                     // 计算经纬度坐标（基于网格坐标和该监测点的边界框）
                     int gridSize = weather.getGridSize() != null ? weather.getGridSize() : 10;
                     double gridX = weather.getGridX() != null ? weather.getGridX().doubleValue() : 0;
                     double gridY = weather.getGridY() != null ? weather.getGridY().doubleValue() : 0;
-                    
+
                     double lng = pointMinLng + (pointMaxLng - pointMinLng) * (gridX / (double) (gridSize - 1));
                     double lat = pointMinLat + (pointMaxLat - pointMinLat) * (gridY / (double) (gridSize - 1));
 
@@ -270,7 +241,6 @@ public class WeatherService {
             }
         }
 
-
         // 构建返回结果
         Map<String, Object> result = new HashMap<>();
         result.put("points", points);
@@ -280,8 +250,7 @@ public class WeatherService {
                 "dataType", "geo_heatmap",
                 "unit", "风险指数(0-100)",
                 "calculationMethod", "geo_weather_based_risk",
-                "generatedAt", LocalDateTime.now().toString()
-        ));
+                "generatedAt", LocalDateTime.now().toString()));
 
         return result;
     }
@@ -310,169 +279,104 @@ public class WeatherService {
         return result;
     }
 
-    /**
-     * 获取天气预测热力图数据（兼容旧接口）
-     */
-    public Map<String, Object> getWeatherHeatmap(String pointId, String timeRange, String resolution, String bounds, Boolean forRouteAnalysis) {
-        // 解析参数
-        if (pointId == null || pointId.isEmpty()) {
-            // 使用当前选中的监测点作为默认值
-            try {
-                MonitoringPoint selectedPoint = monitoringPointService.getSelected();
-                pointId = selectedPoint.getId();
-            } catch (Exception e) {
-                // 如果获取失败，使用第一个激活的监测点
-                List<MonitoringPoint> points = monitoringPointService.getAll();
-                if (!points.isEmpty()) {
-                    pointId = points.get(0).getId();
-                } else {
-                    pointId = "point-1"; // 后备方案
-                }
-            }
-        }
-
-        // 如果提供了bounds参数，生成区域范围的热力图
-        if (bounds != null && !bounds.isEmpty()) {
-            Map<String, Object> heatmapData = generateAreaHeatmapData(pointId, timeRange, resolution, bounds, forRouteAnalysis);
-
-            Map<String, Object> result = new HashMap<>();
-            result.put("updateTime", LocalDateTime.now().toString());
-            result.put("pointId", pointId);
-            result.put("timeRange", timeRange);
-            result.put("resolution", resolution);
-            result.put("bounds", bounds);
-            result.put("forRouteAnalysis", forRouteAnalysis != null ? forRouteAnalysis : false);
-            result.put("data", heatmapData);
-            result.put("dataType", "area_heatmap");
-
-            return result;
-        } else {
-            // 如果没有bounds，生成单点热力图
-            Map<String, Object> heatmapData = generateMockHeatmapData(pointId, timeRange, resolution, bounds, forRouteAnalysis);
-
-            Map<String, Object> result = new HashMap<>();
-            result.put("updateTime", LocalDateTime.now().toString());
-            result.put("pointId", pointId);
-            result.put("timeRange", timeRange);
-            result.put("resolution", resolution);
-            result.put("forRouteAnalysis", forRouteAnalysis != null ? forRouteAnalysis : false);
-            result.put("data", heatmapData);
-            result.put("dataType", "point_heatmap");
-
-            return result;
-        }
-    }
-
-    /**
-     * 批量获取天气热力图数据
-     */
-    public Map<String, Object> getBatchWeatherHeatmap(String areaIds, String timeRange, String resolution) {
-        String[] ids = areaIds.split(",");
-
-        Map<String, Object> batchData = new HashMap<>();
-        for (String areaId : ids) {
-            Map<String, Object> heatmapData = generateMockHeatmapData(
-                    areaId.trim(),
-                    timeRange,
-                    resolution,
-                    null,
-                    true // 批量获取通常用于航路分析
-            );
-            batchData.put(areaId.trim(), heatmapData);
-        }
-
-        Map<String, Object> result = new HashMap<>();
-        result.put("updateTime", LocalDateTime.now().toString());
-        result.put("areaIds", ids);
-        result.put("timeRange", timeRange);
-        result.put("resolution", resolution);
-        result.put("data", batchData);
-
-        return result;
-    }
-
     // ==================== 工具方法 ====================
-    private LocalDateTime[] parseTimeRange(String timeRange) {
-        if (timeRange == null || !timeRange.contains(",")) {
-            return new LocalDateTime[]{
-                    LocalDateTime.now().minusHours(24),
-                    LocalDateTime.now()
-            };
-        }
-        String[] parts = timeRange.split(",");
-        return new LocalDateTime[]{
-                LocalDateTime.parse(parts[0].trim().replace(" ", "T")),
-                LocalDateTime.parse(parts[1].trim().replace(" ", "T"))
-        };
-    }
 
     /**
      * 调用和风天气API
      */
     private Map<String, Object> callQWeatherAPI(double longitude, double latitude) {
-        // 这里应该调用和风天气API
-        // 实际项目中需要配置API Key和请求逻辑
-        // 暂时返回模拟数据
+        RestTemplate restTemplate = new RestTemplate();
+        try {
+            // 构建和风天气 API 请求
+            String url = String.format(
+                    "https://m73yfr9h37.re.qweatherapi.com/v7/weather/now?location=%f,%f",
+                    longitude, latitude);
 
-        Map<String, Object> weatherData = new HashMap<>();
-        weatherData.put("temp", "25");
-        weatherData.put("feelsLike", "24");
-        weatherData.put("icon", "100");
-        weatherData.put("text", "晴");
-        weatherData.put("wind360", "45");
-        weatherData.put("windDir", "东北风");
-        weatherData.put("windScale", "3");
-        weatherData.put("windSpeed", "12");
-        weatherData.put("humidity", "68");
-        weatherData.put("precip", "0.0");
-        weatherData.put("pressure", "1013");
-        weatherData.put("vis", "10");
-        weatherData.put("cloud", "25");
-        weatherData.put("dew", "18");
-        weatherData.put("windShearLevel", "low");
-        weatherData.put("stabilityIndex", "C");
+            // 创建请求头
+            HttpHeaders headers = new HttpHeaders();
+            headers.set("X-QW-Api-Key", "7226910f80e3434aa26b1b55938b6f58");
+            headers.set("Accept-Encoding", "gzip");
 
-        return weatherData;
-    }
+            // 创建请求实体
+            HttpEntity<String> entity = new HttpEntity<>(headers);
 
-    /**
-     * 生成模拟天气数据
-     */
-    private Map<String, Object> generateMockWeatherData(String pointId) {
-        WeatherRealtime mock = new WeatherRealtime();
-        mock.setPointId(pointId);
-        mock.setObsTime(LocalDateTime.now());
-        mock.setTemp(BigDecimal.valueOf(25.0));
-        mock.setFeelsLike(BigDecimal.valueOf(24.0));
-        mock.setIcon("100");
-        mock.setText("晴");
-        mock.setWind360(45);
-        mock.setWindDir("东北风");
-        mock.setWindScale(String.valueOf(3));
-        mock.setWindSpeed(BigDecimal.valueOf(12.0));
-        mock.setHumidity(68);
-        mock.setPrecip(BigDecimal.valueOf(0.0));
-        mock.setPressure(BigDecimal.valueOf(1013.0));
-        mock.setVis(BigDecimal.valueOf(10));
-        mock.setCloud(25);
-        mock.setDew(BigDecimal.valueOf(18.0));
-        mock.setWindShearLevel("low");
-        mock.setStabilityIndex("C");
-        // 添加数据来源和质量字段
-        mock.setDataSource("mock");
-        mock.setDataQuality(70);
-        mock.setCreatedAt(LocalDateTime.now());
+            // 调用 API 获取原始响应
+            ResponseEntity<byte[]> responseEntity = restTemplate.exchange(url, HttpMethod.GET, entity, byte[].class);
 
-        Map<String, Object> result = new HashMap<>();
-        result.put("updateTime", LocalDateTime.now().toString());
-        result.put("data", mock);
-        return result;
+            if (responseEntity.getStatusCode().is2xxSuccessful()) {
+                byte[] responseBodyBytes = responseEntity.getBody();
+                if (responseBodyBytes != null) {
+                    // 检查是否是Gzip压缩数据
+                    boolean isGzipped = false;
+                    if (responseBodyBytes.length >= 2) {
+                        int magic = ((responseBodyBytes[0] & 0xff) << 8) | (responseBodyBytes[1] & 0xff);
+                        isGzipped = (magic == GZIPInputStream.GZIP_MAGIC);
+                    }
+
+                    // 解压数据
+                    String responseBody;
+                   // if (isGzipped) {
+                        try (ByteArrayInputStream bais = new ByteArrayInputStream(responseBodyBytes);
+                                GZIPInputStream gis = new GZIPInputStream(bais);
+                                InputStreamReader isr = new InputStreamReader(gis, StandardCharsets.UTF_8);
+                                BufferedReader br = new BufferedReader(isr)) {
+                            StringBuilder sb = new StringBuilder();
+                            String line;
+                            while ((line = br.readLine()) != null) {
+                                sb.append(line);
+                            }
+                            responseBody = sb.toString();
+                        }
+                  //  } else {
+                  //      responseBody = new String(responseBodyBytes, StandardCharsets.UTF_8);
+                   // }
+
+                    // 解析 JSON 响应
+                    ObjectMapper objectMapper = new ObjectMapper();
+                    ObjectNode jsonResponse = objectMapper.readValue(responseBody, ObjectNode.class);
+
+                    // 检查响应状态
+                    String code = jsonResponse.get("code").asText();
+                    if ("200".equals(code)) {
+                        ObjectNode now = (ObjectNode) jsonResponse.get("now");
+                        Map<String, Object> weatherData = new HashMap<>();
+
+                        // 提取数据
+                        weatherData.put("temp", now.get("temp").asText());
+                        weatherData.put("feelsLike", now.get("feelsLike").asText());
+                        weatherData.put("icon", now.get("icon").asText());
+                        weatherData.put("text", now.get("text").asText());
+                        weatherData.put("wind360", now.get("wind360").asText());
+                        weatherData.put("windDir", now.get("windDir").asText());
+                        weatherData.put("windScale", now.get("windScale").asText());
+                        weatherData.put("windSpeed", now.get("windSpeed").asText());
+                        weatherData.put("humidity", now.get("humidity").asText());
+                        weatherData.put("precip", now.get("precip").asText());
+                        weatherData.put("pressure", now.get("pressure").asText());
+                        weatherData.put("vis", now.get("vis").asText());
+                        weatherData.put("cloud", now.get("cloud").asText());
+                        weatherData.put("dew", now.get("dew").asText());
+
+                        // 添加风切变等级和稳定度指数（模拟数据）
+                        weatherData.put("windShearLevel", "low");
+                        weatherData.put("stabilityIndex", "C");
+
+                        return weatherData;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.error("调用和风天气 API 失败: {}", e.getMessage(), e);
+        }
+
+        return null;
     }
 
     /**
      * 生成基于气象数据和阈值配置的风险热力图数据
      */
-    private Map<String, Object> generateMockHeatmapData(String pointId, String timeRange, String resolution, String bounds, Boolean forRouteAnalysis) {
+    private Map<String, Object> generateMockHeatmapData(String pointId, String timeRange, String resolution,
+            String bounds, Boolean forRouteAnalysis) {
 
         // 1. 获取实时气象数据
         Map<String, Object> weatherResult = getRealtimeWeather(pointId);
@@ -574,19 +478,15 @@ public class WeatherService {
                         "precipitation", weatherData.getPrecip(),
                         "humidity", weatherData.getHumidity(),
                         "windShearLevel", weatherData.getWindShearLevel(),
-                        "stabilityIndex", weatherData.getStabilityIndex()
-                ),
+                        "stabilityIndex", weatherData.getStabilityIndex()),
                 "thresholds", Map.of(
                         "maxWindSpeed", thresholds.getMaxWindSpeed(),
                         "minVisibility", thresholds.getMinVisibility(),
                         "maxPrecipitation", thresholds.getMaxPrecipitation(),
-                        "maxHumidity", thresholds.getMaxHumidity()
-                ),
-                "generatedAt", LocalDateTime.now().toString()
-        ));
+                        "maxHumidity", thresholds.getMaxHumidity()),
+                "generatedAt", LocalDateTime.now().toString()));
 
         return result;
-
 
     }
 
@@ -616,8 +516,7 @@ public class WeatherService {
         AircraftLimit limit = aircraftLimitMapper.selectOne(
                 new LambdaQueryWrapper<AircraftLimit>()
                         .eq(AircraftLimit::getAircraftId, "aircraft-1")
-                        .last("LIMIT 1")
-        );
+                        .last("LIMIT 1"));
 
         if (limit == null) {
             limit = new AircraftLimit();
@@ -672,8 +571,7 @@ public class WeatherService {
 
         // 5. 风切变风险
         String windShearLevel = weather.getWindShearLevel();
-        double windShearRisk = "high".equals(windShearLevel) ? 0.9 :
-                "medium".equals(windShearLevel) ? 0.5 : 0.1;
+        double windShearRisk = "high".equals(windShearLevel) ? 0.9 : "medium".equals(windShearLevel) ? 0.5 : 0.1;
         totalRisk += windShearRisk;
         factorCount++;
 
@@ -742,7 +640,7 @@ public class WeatherService {
      * 计算综合风险值
      */
     private int calculateRiskValue(double baseRisk, double heightFactor, double timeFactor,
-                                   double weatherFactor, boolean forRouteAnalysis) {
+            double weatherFactor, boolean forRouteAnalysis) {
         // 基础计算
         double risk = baseRisk * heightFactor * timeFactor * weatherFactor;
 
@@ -764,7 +662,8 @@ public class WeatherService {
     /**
      * 生成区域范围的热力图数据
      */
-    private Map<String, Object> generateAreaHeatmapData(String pointId, String timeRange, String resolution, String bounds, Boolean forRouteAnalysis) {
+    private Map<String, Object> generateAreaHeatmapData(String pointId, String timeRange, String resolution,
+            String bounds, Boolean forRouteAnalysis) {
 
         // 解析边界框
         double[] bbox = parseBoundingBox(bounds);
@@ -831,8 +730,7 @@ public class WeatherService {
                 "calculationMethod", "area_weather_based_risk_assessment",
                 "gridType", "regular_grid",
                 "gridCount", gridSize * gridSize,
-                "generatedAt", LocalDateTime.now().toString()
-        ));
+                "generatedAt", LocalDateTime.now().toString()));
 
         return result;
     }
@@ -852,7 +750,7 @@ public class WeatherService {
                 double maxLng = Double.parseDouble(parts[2]);
                 double maxLat = Double.parseDouble(parts[3]);
 
-                return new double[]{minLng, minLat, maxLng, maxLat};
+                return new double[] { minLng, minLat, maxLng, maxLat };
             }
         } catch (Exception e) {
             // 解析失败
@@ -871,8 +769,7 @@ public class WeatherService {
         List<MicroscaleWeather> weatherList = microscaleWeatherMapper.selectList(
                 new LambdaQueryWrapper<MicroscaleWeather>()
                         .orderByDesc(MicroscaleWeather::getDataTime)
-                        .last("LIMIT 100")
-        );
+                        .last("LIMIT 100"));
 
         if (!weatherList.isEmpty()) {
             // 基于数据库数据计算平均气象数据
@@ -968,6 +865,421 @@ public class WeatherService {
     }
 
     /**
+     * 获取天气预测趋势数据（用于折线图）
+     * 调用 Open-Meteo API 获取 15 分钟间隔的天气预测数据
+     */
+    public Map<String, Object> getWeatherForecastTrend(String pointId) {
+        try {
+            // 根据 pointId 获取监测点坐标
+            MonitoringPoint point = monitoringPointService.getById(pointId);
+            if (point == null) {
+                throw new IllegalArgumentException("监测点不存在: " + pointId);
+            }
+
+            // 检查坐标是否有效
+            if (point.getLatitude() == null || point.getLongitude() == null) {
+                throw new IllegalArgumentException("监测点坐标数据不完整: " + pointId);
+            }
+
+            // 1. 检查数据库中是否有今天的预报数据
+            LocalDate today = LocalDate.now();
+            LocalDateTime startOfDay = today.atStartOfDay();
+            LocalDateTime endOfDay = today.atTime(23, 59, 59);
+
+            List<WeatherForecast> todayForecasts = weatherForecastMapper.selectList(
+                    new LambdaQueryWrapper<WeatherForecast>()
+                            .eq(WeatherForecast::getPointId, pointId)
+                            .ge(WeatherForecast::getForecastTime, startOfDay)
+                            .le(WeatherForecast::getForecastTime, endOfDay)
+                            .orderByAsc(WeatherForecast::getForecastTime));
+
+            Map<String, Object> weatherData;
+
+            // 2. 如果数据库有今天的预报数据，直接使用
+            if (!todayForecasts.isEmpty()) {
+                weatherData = convertForecastsToResponse(todayForecasts);
+            } else {
+                double latitude = point.getLatitude().doubleValue();
+                double longitude = point.getLongitude().doubleValue();
+
+                // 3. 数据库没有今天的预报数据，调用 Open-Meteo API
+                // 构建 Open-Meteo API 请求参数
+                String url = "https://api.open-meteo.com/v1/forecast";
+                String params = String.format(
+                        "?latitude=%.2f&longitude=%.2f&minutely_15=temperature_2m,wind_speed_10m,visibility,precipitation,weather_code&forecast_days=1",
+                        latitude, longitude);
+
+                // 调用 API
+                weatherData = callOpenMeteoAPI(url + params);
+
+                // 4. 保存到数据库
+                saveForecastDataToDatabase(pointId, weatherData);
+            }
+
+            // 5. 过滤数据，只返回从当前时间开始的3小时，每30分钟一个数据点
+            Map<String, Object> filteredData = filterNext3HoursData(weatherData);
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("updateTime", LocalDateTime.now().toString());
+            result.put("pointId", pointId);
+            result.put("data", filteredData);
+            return result;
+
+        } catch (Exception e) {
+            log.error("获取天气预测趋势失败", e);
+            return null;
+        }
+    }
+
+    /**
+     * 过滤出从当前时间开始的3小时数据，每30分钟一个数据点
+     */
+    private Map<String, Object> filterNext3HoursData(Map<String, Object> weatherData) {
+        Map<String, Object> filteredData = new HashMap<>();
+
+        // 获取所有数据列表
+        List<String> allTimes = (List<String>) weatherData.get("time");
+        List<Double> allTemperatures = (List<Double>) weatherData.get("temperature_2m");
+        List<Double> allPrecipitation = (List<Double>) weatherData.get("precipitation");
+        List<Double> allWindSpeed = (List<Double>) weatherData.get("wind_speed_10m");
+        List<Integer> allVisibility = (List<Integer>) weatherData.get("visibility");
+        List<Integer> allWeatherCode = (List<Integer>) weatherData.get("weather_code");
+        List<String> allWeatherText = (List<String>) weatherData.get("weather_text");
+
+        if (allTimes == null || allTimes.isEmpty()) {
+            return filteredData;
+        }
+
+        // 过滤后的数据列表
+        List<String> filteredTimes = new ArrayList<>();
+        List<Double> filteredTemperatures = new ArrayList<>();
+        List<Double> filteredPrecipitation = new ArrayList<>();
+        List<Double> filteredWindSpeed = new ArrayList<>();
+        List<Integer> filteredVisibility = new ArrayList<>();
+        List<Integer> filteredWeatherCode = new ArrayList<>();
+        List<String> filteredWeatherText = new ArrayList<>();
+
+        // 获取当前时间
+        LocalTime now = LocalTime.now();
+        int currentHour = now.getHour();
+        int currentMinute = now.getMinute();
+
+        // 计算当前时间的分钟数（从0点开始）
+        int currentMinutes = currentHour * 60 + currentMinute;
+        // 计算3小时后的分钟数
+        int endMinutes = currentMinutes + 3 * 60;
+
+        // 遍历所有时间点
+        for (int i = 0; i < allTimes.size(); i++) {
+            String timeStr = allTimes.get(i);
+            String[] parts = timeStr.split(":");
+            if (parts.length != 2) {
+                continue;
+            }
+
+            int hour = Integer.parseInt(parts[0]);
+            int minute = Integer.parseInt(parts[1]);
+            int minutesFromMidnight = hour * 60 + minute;
+
+            // 检查是否在当前时间到3小时后之间
+            if (minutesFromMidnight >= currentMinutes && minutesFromMidnight <= endMinutes) {
+                // 检查是否是30分钟的倍数（0, 30分钟）
+                if (minute == 0 || minute == 30) {
+                    filteredTimes.add(timeStr);
+                    if (allTemperatures != null && i < allTemperatures.size()) {
+                        filteredTemperatures.add(allTemperatures.get(i));
+                    }
+                    if (allPrecipitation != null && i < allPrecipitation.size()) {
+                        filteredPrecipitation.add(allPrecipitation.get(i));
+                    }
+                    if (allWindSpeed != null && i < allWindSpeed.size()) {
+                        filteredWindSpeed.add(allWindSpeed.get(i));
+                    }
+                    if (allVisibility != null && i < allVisibility.size()) {
+                        filteredVisibility.add(allVisibility.get(i));
+                    }
+                    if (allWeatherCode != null && i < allWeatherCode.size()) {
+                        filteredWeatherCode.add(allWeatherCode.get(i));
+                    }
+                    if (allWeatherText != null && i < allWeatherText.size()) {
+                        filteredWeatherText.add(allWeatherText.get(i));
+                    }
+
+                }
+            }
+        }
+
+        // 确保至少有6个数据点
+        if (filteredTimes.size() < 6 && !allTimes.isEmpty()) {
+            // 如果数据不足，从所有数据中选择最近的6个30分钟间隔的点
+            for (int i = 0; i < allTimes.size() && filteredTimes.size() < 6; i++) {
+                String timeStr = allTimes.get(i);
+                String[] parts = timeStr.split(":");
+                if (parts.length != 2) {
+                    continue;
+                }
+
+                int minute = Integer.parseInt(parts[1]);
+                if (minute == 0 || minute == 30) {
+                    // 检查是否已经添加
+                    if (!filteredTimes.contains(timeStr)) {
+                        filteredTimes.add(timeStr);
+                        if (allTemperatures != null && i < allTemperatures.size()) {
+                            filteredTemperatures.add(allTemperatures.get(i));
+                        }
+                        if (allPrecipitation != null && i < allPrecipitation.size()) {
+                            filteredPrecipitation.add(allPrecipitation.get(i));
+                        }
+                        if (allWindSpeed != null && i < allWindSpeed.size()) {
+                            filteredWindSpeed.add(allWindSpeed.get(i));
+                        }
+                        if (allVisibility != null && i < allVisibility.size()) {
+                            filteredVisibility.add(allVisibility.get(i));
+                        }
+                        if (allWeatherCode != null && i < allWeatherCode.size()) {
+                            filteredWeatherCode.add(allWeatherCode.get(i));
+                        }
+                        if (allWeatherText != null && i < allWeatherText.size()) {
+                            filteredWeatherText.add(allWeatherText.get(i));
+                        }
+
+                    }
+                }
+            }
+        }
+
+        // 填充过滤后的数据
+        filteredData.put("time", filteredTimes);
+        filteredData.put("temperature_2m", filteredTemperatures);
+        filteredData.put("precipitation", filteredPrecipitation);
+        filteredData.put("wind_speed_10m", filteredWindSpeed);
+        filteredData.put("visibility", filteredVisibility);
+        filteredData.put("weather_code", filteredWeatherCode);
+        filteredData.put("weather_text", filteredWeatherText);
+
+        return filteredData;
+    }
+
+    /**
+     * 调用 Open-Meteo API
+     */
+    private Map<String, Object> callOpenMeteoAPI(String apiUrl) {
+        RestTemplate restTemplate = new RestTemplate();
+        try {
+            // 调用 Open-Meteo API
+            ResponseEntity<String> responseEntity = restTemplate.getForEntity(apiUrl, String.class);
+            if (responseEntity.getStatusCode().is2xxSuccessful()) {
+                String responseBody = responseEntity.getBody();
+                if (responseBody != null) {
+                    // 解析 JSON 响应
+                    ObjectMapper objectMapper = new ObjectMapper();
+                    ObjectNode jsonResponse = objectMapper.readValue(responseBody, ObjectNode.class);
+                    Map<String, Object> minutely15 = new HashMap<>();
+
+                    // 处理时间数据
+                    ObjectNode minutely15Object = (ObjectNode) jsonResponse.get("minutely_15");
+                    ArrayNode timeArray = (ArrayNode) minutely15Object.get("time");
+                    List<String> times = new ArrayList<>();
+                    for (int i = 0; i < timeArray.size(); i++) {
+                        String timeStr = timeArray.get(i).asText();
+                        // 解析 ISO 8601 时间格式
+                        LocalDateTime time = LocalDateTime.parse(timeStr);
+                        times.add(String.format("%02d:%02d", time.getHour(), time.getMinute()));
+                    }
+
+                    // 处理温度数据
+                    ArrayNode tempArray = (ArrayNode) minutely15Object.get("temperature_2m");
+                    List<Double> temperature = new ArrayList<>();
+                    for (int i = 0; i < tempArray.size(); i++) {
+                        temperature.add(tempArray.get(i).asDouble());
+                    }
+
+                    // 处理降水量数据
+                    ArrayNode precipArray = (ArrayNode) minutely15Object.get("precipitation");
+                    List<Double> precipitation = new ArrayList<>();
+                    for (int i = 0; i < precipArray.size(); i++) {
+                        precipitation.add(precipArray.get(i).asDouble());
+                    }
+
+                    // 处理风速数据
+                    ArrayNode windArray = (ArrayNode) minutely15Object.get("wind_speed_10m");
+                    List<Double> windSpeed = new ArrayList<>();
+                    for (int i = 0; i < windArray.size(); i++) {
+                        windSpeed.add(windArray.get(i).asDouble());
+                    }
+
+                    // 处理能见度数据（从米转换为公里）
+                    ArrayNode visArray = (ArrayNode) minutely15Object.get("visibility");
+                    List<Integer> visibility = new ArrayList<>();
+                    for (int i = 0; i < visArray.size(); i++) {
+                        visibility.add((int) Math.round(visArray.get(i).asDouble() / 1000.0));
+                    }
+
+                    // 处理天气代码
+                    ArrayNode weatherArray = (ArrayNode) minutely15Object.get("weather_code");
+                    List<Integer> weatherCode = new ArrayList<>();
+                    List<String> weatherText = new ArrayList<>();
+                    for (int i = 0; i < weatherArray.size(); i++) {
+                        int code = weatherArray.get(i).asInt();
+                        weatherCode.add(code);
+                        Map<String, String> weatherInfo = getWeatherDescription(code);
+                        weatherText.add(weatherInfo.get("text"));
+                    }
+
+                    minutely15.put("time", times);
+                    minutely15.put("temperature_2m", temperature);
+                    minutely15.put("precipitation", precipitation);
+                    minutely15.put("wind_speed_10m", windSpeed);
+                    minutely15.put("visibility", visibility);
+                    minutely15.put("weather_code", weatherCode);
+                    minutely15.put("weather_text", weatherText);
+
+                    return minutely15;
+                }
+            }
+        } catch (Exception e) {
+            log.error("调用 Open-Meteo API 失败: {}", e.getMessage(), e);
+        }
+
+        return null;
+    }
+
+    /**
+     * 将数据库中的预报数据转换为响应格式
+     */
+    private Map<String, Object> convertForecastsToResponse(List<WeatherForecast> forecasts) {
+        Map<String, Object> minutely15 = new HashMap<>();
+
+        List<String> times = new ArrayList<>();
+        List<Double> temperature = new ArrayList<>();
+        List<Double> precipitation = new ArrayList<>();
+        List<Double> windSpeed = new ArrayList<>();
+        List<Integer> visibility = new ArrayList<>();
+        List<Integer> weatherCode = new ArrayList<>();
+        List<String> weatherText = new ArrayList<>();
+
+        for (WeatherForecast forecast : forecasts) {
+            LocalDateTime forecastTime = forecast.getForecastTime();
+            times.add(String.format("%02d:%02d", forecastTime.getHour(), forecastTime.getMinute()));
+            temperature.add(forecast.getTemperature() != null ? forecast.getTemperature().doubleValue() : 0.0);
+            precipitation.add(forecast.getPrecipitation() != null ? forecast.getPrecipitation().doubleValue() : 0.0);
+            windSpeed.add(forecast.getWindSpeed() != null ? forecast.getWindSpeed().doubleValue() : 0.0);
+            visibility.add(forecast.getVisibility() != null ? forecast.getVisibility().intValue() : 0);
+            weatherCode.add(forecast.getWeatherCode());
+            weatherText.add(forecast.getWeatherText() != null ? forecast.getWeatherText() : "未知");
+        }
+
+        minutely15.put("time", times);
+        minutely15.put("temperature_2m", temperature);
+        minutely15.put("precipitation", precipitation);
+        minutely15.put("wind_speed_10m", windSpeed);
+        minutely15.put("visibility", visibility);
+        minutely15.put("weather_code", weatherCode);
+        minutely15.put("weather_text", weatherText);
+
+        return minutely15;
+    }
+
+    /**
+     * 保存预报数据到数据库
+     */
+    private void saveForecastDataToDatabase(String pointId, Map<String, Object> weatherData) {
+        List<String> timeStrings = (List<String>) weatherData.get("time");
+        List<Double> temperature = (List<Double>) weatherData.get("temperature_2m");
+        List<Double> precipitation = (List<Double>) weatherData.get("precipitation");
+        List<Double> windSpeed = (List<Double>) weatherData.get("wind_speed_10m");
+        List<Integer> visibility = (List<Integer>) weatherData.get("visibility");
+        List<Integer> weatherCode = (List<Integer>) weatherData.get("weather_code");
+
+        if (timeStrings == null || temperature == null || precipitation == null ||
+                windSpeed == null || visibility == null || weatherCode == null) {
+            return;
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        LocalDate today = now.toLocalDate();
+
+        for (int i = 0; i < timeStrings.size(); i++) {
+            WeatherForecast forecast = new WeatherForecast();
+            forecast.setPointId(pointId);
+
+            // 将时间字符串（HH:mm）转换为LocalDateTime
+            String timeStr = timeStrings.get(i);
+            String[] parts = timeStr.split(":");
+            if (parts.length == 2) {
+                int hour = Integer.parseInt(parts[0]);
+                int minute = Integer.parseInt(parts[1]);
+                LocalDateTime forecastTime = LocalDateTime.of(today, LocalTime.of(hour, minute));
+                forecast.setForecastTime(forecastTime);
+            } else {
+                forecast.setForecastTime(now.plusMinutes(i * 15));
+            }
+
+            forecast.setTemperature(BigDecimal.valueOf(temperature.get(i)));
+            forecast.setPrecipitation(BigDecimal.valueOf(precipitation.get(i)));
+            forecast.setWindSpeed(BigDecimal.valueOf(windSpeed.get(i)));
+            forecast.setVisibility(BigDecimal.valueOf(visibility.get(i)));
+            forecast.setWeatherCode(weatherCode.get(i));
+
+            // 映射天气描述和图标
+            Map<String, String> weatherInfo = getWeatherDescription(weatherCode.get(i));
+            forecast.setWeatherText(weatherInfo.get("text"));
+
+            forecast.setDataSource("open-meteo");
+            forecast.setDataQuality(90);
+            forecast.setCreatedAt(now);
+
+            weatherForecastMapper.insert(forecast);
+        }
+    }
+
+    /**
+     * 根据 WMO code 获取天气描述和图标
+     */
+    private Map<String, String> getWeatherDescription(int weatherCode) {
+        Map<String, String> weatherInfo = new HashMap<>();
+
+        switch (weatherCode) {
+            case 0: // 晴天
+                weatherInfo.put("text", "晴天");
+                break;
+            case 1: // 大部分晴天
+            case 2: // 部分晴天
+            case 3: // 阴天
+                weatherInfo.put("text", "多云");
+                break;
+            case 45: // 雾
+            case 48: // 霾
+                weatherInfo.put("text", "雾");
+                break;
+            case 51: // 小雨
+            case 53: // 中雨
+            case 55: // 大雨
+                weatherInfo.put("text", "雨");
+                break;
+            case 61: // 小雨
+            case 63: // 中雨
+            case 65: // 大雨
+                weatherInfo.put("text", "雨");
+                break;
+            case 71: // 小雪
+            case 73: // 中雪
+            case 75: // 大雪
+                weatherInfo.put("text", "雪");
+                break;
+            case 80: // 阵雨
+            case 81: // 中阵雨
+            case 82: // 大阵雨
+                weatherInfo.put("text", "阵雨");
+                break;
+            default:
+                weatherInfo.put("text", "未知");
+        }
+
+        return weatherInfo;
+    }
+
+    /**
      * 生成时间标签
      */
     private List<String> generateTimeLabels(String timeRange, int timeCount) {
@@ -981,7 +1293,8 @@ public class WeatherService {
         List<String> times = new ArrayList<>();
 
         int interval = 30; // 默认30分钟间隔
-        if ("1h".equals(timeRange)) interval = 10;
+        if ("1h".equals(timeRange))
+            interval = 10;
 
         for (int i = 0; i < timeCount; i++) {
             LocalDateTime time = baseTime.plusMinutes(i * interval);
@@ -995,7 +1308,7 @@ public class WeatherService {
      * 计算网格点的风险数据
      */
     private Map<String, Object> calculateGridRiskData(double lng, double lat, Map<String, Object> weatherData,
-                                                      AircraftLimit thresholds, int timeCount) {
+            AircraftLimit thresholds, int timeCount) {
         Map<String, Object> baseWeather = (Map<String, Object>) weatherData.get("base");
 
         // 计算基础风险
@@ -1076,14 +1389,14 @@ public class WeatherService {
                 new LambdaQueryWrapper<MicroscaleWeather>()
                         .eq(MicroscaleWeather::getPointId, pointId)
                         .or()
-                        .orderByDesc(MicroscaleWeather::getDataTime)
-        );
+                        .orderByDesc(MicroscaleWeather::getDataTime));
     }
 
     /**
      * 通过插值获取指定位置的气象数据
      */
-    private Map<String, Object> interpolateWeatherData(double lng, double lat, List<MicroscaleWeather> weatherPoints, double[] bbox) {
+    private Map<String, Object> interpolateWeatherData(double lng, double lat, List<MicroscaleWeather> weatherPoints,
+            double[] bbox) {
         if (weatherPoints.isEmpty()) {
             // 如果没有数据，使用默认值
             Map<String, Object> baseWeather = new HashMap<>();
@@ -1124,7 +1437,8 @@ public class WeatherService {
             // 加权累加
             weightedWindSpeed += (weather.getWindSpeed() != null ? weather.getWindSpeed().doubleValue() : 0) * weight;
             weightedWindShear += (weather.getWindShear() != null ? weather.getWindShear().doubleValue() : 0) * weight;
-            weightedTurbulence += (weather.getTurbulence() != null ? weather.getTurbulence().doubleValue() : 0) * weight;
+            weightedTurbulence += (weather.getTurbulence() != null ? weather.getTurbulence().doubleValue() : 0)
+                    * weight;
             weightedRiskLevel += weather.getRiskLevel() * weight;
         }
 
@@ -1207,7 +1521,8 @@ public class WeatherService {
     /**
      * 生成图表热力图数据（时间-高度矩阵）
      */
-    private Map<String, Object> generateChartHeatmapData(String pointId, String timeRange, String resolution, Boolean forRouteAnalysis) {
+    private Map<String, Object> generateChartHeatmapData(String pointId, String timeRange, String resolution,
+            Boolean forRouteAnalysis) {
         // 这就是原来的 generateMockHeatmapData 逻辑，用于ECharts图表
         return generateMockHeatmapData(pointId, timeRange, resolution, null, forRouteAnalysis);
     }
@@ -1219,7 +1534,6 @@ public class WeatherService {
 
         // 解析边界框
         double[] bbox = parseBoundingBox(bounds);
-
 
         double minLng = bbox[0];
         double minLat = bbox[1];
@@ -1281,11 +1595,9 @@ public class WeatherService {
                 "unit", "风险指数(0-100)",
                 "calculationMethod", "geo_weather_based_risk",
                 "generatedAt", LocalDateTime.now().toString(),
-                "resolution", resolution
-        ));
+                "resolution", resolution));
 
         return result;
-
 
     }
 
@@ -1293,12 +1605,14 @@ public class WeatherService {
      * 获取风险等级
      */
     private String getRiskLevel(int riskValue) {
-        if (riskValue >= 80) return "high";
-        if (riskValue >= 60) return "medium";
-        if (riskValue >= 40) return "low";
+        if (riskValue >= 80)
+            return "high";
+        if (riskValue >= 60)
+            return "medium";
+        if (riskValue >= 40)
+            return "low";
         return "very_low";
     }
-
 
     /**
      * 获取全市范围热力图数据
@@ -1307,13 +1621,11 @@ public class WeatherService {
      */
     public Map<String, Object> getCitywideHeatmap() {
 
-
         // 获取当前区域的边界
         RegionConfig.Bounds boundsConfig = regionConfig.getBounds();
         String citywideBounds = String.format("[%s,%s,%s,%s]",
                 boundsConfig.getWest(), boundsConfig.getSouth(),
                 boundsConfig.getEast(), boundsConfig.getNorth());
-
 
         // 使用通用热力图生成方法，传入null作为pointIds表示区域级查询
         Map<String, Object> heatmapData = generateCommonHeatmapData(citywideBounds, null);
@@ -1343,7 +1655,6 @@ public class WeatherService {
         result.put("totalPoints", points != null ? points.size() : 0);
         result.put("dataType", "citywide_heatmap");
 
-
         return result;
 
     }
@@ -1351,7 +1662,8 @@ public class WeatherService {
     /**
      * 生成模拟的全市范围热力图数据（降级方案）
      */
-    private Map<String, Object> generateMockCitywideHeatmapData(Integer totalHours, String resolution, String baseTime) {
+    private Map<String, Object> generateMockCitywideHeatmapData(Integer totalHours, String resolution,
+            String baseTime) {
         log.warn("使用模拟热力图数据（降级方案），参数: totalHours={}, resolution={}, baseTime={}",
                 totalHours, resolution, baseTime);
 

@@ -11,7 +11,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 /**
@@ -24,59 +26,285 @@ public class SuitabilityService {
 
     private final SuitabilityAnalysisMapper suitabilityAnalysisMapper;
     private final VerticalProfileMapper verticalProfileMapper;
-    private final WeatherRealtimeMapper weatherRealtimeMapper;
     private final AircraftLimitMapper aircraftLimitMapper;
-    private final MonitoringPointService monitoringPointService;
     private final WeatherService weatherService;
 
     // ==================== 适飞分析（重写） ====================
 
     /**
      * 获取适飞状态 - 实时计算适飞性
-     * 流程：1.获取气象数据 2.获取阈值 3.计算适飞性 4.保存结果 5.返回
+     * 流程：1.获取气象数据（当前和预测） 2.获取阈值 3.计算适飞性 4.保存结果 5.返回
      */
     @Transactional
     public Map<String, Object> getSuitabilityStatus(String pointId, String factor, Integer totalHours) {
-        // 参数处理
-        if (pointId == null || pointId.isEmpty()) {
-            // 使用当前选中的监测点作为默认值
-            try {
-                MonitoringPoint selectedPoint = monitoringPointService.getSelected();
-                pointId = selectedPoint.getId();
-            } catch (Exception e) {
-                // 如果获取失败，使用第一个激活的监测点
-                List<MonitoringPoint> points = monitoringPointService.getAll();
-                if (!points.isEmpty()) {
-                    pointId = points.get(0).getId();
-                } else {
-                    pointId = "point-1"; // 后备方案
-                }
+        // 1. 检查数据库是否有1小时内的适飞分析数据
+        LocalDateTime oneHourAgo = LocalDateTime.now().minusHours(1);
+        List<SuitabilityAnalysis> recentAnalysis = suitabilityAnalysisMapper.selectList(
+            new LambdaQueryWrapper<SuitabilityAnalysis>()
+                .eq(SuitabilityAnalysis::getPointId, pointId)
+                .ge(SuitabilityAnalysis::getCreatedAt, oneHourAgo)
+                .orderByDesc(SuitabilityAnalysis::getCreatedAt)
+        );
+        
+        // 如果有最近数据，直接使用
+        if (!recentAnalysis.isEmpty()) {
+            // 构建时间序列数据从数据库
+            List<TimePointSuitability> timeSeries = buildTimeSeriesFromDatabase(recentAnalysis, totalHours, pointId);
+            if (!timeSeries.isEmpty()) {
+                // 计算当前结果
+                SuitabilityResult currentResult = calculateCurrentSuitabilityFromDatabase(timeSeries);
+                return formatSuitabilityResult(pointId, totalHours, timeSeries, currentResult, factor);
             }
         }
-        if (totalHours == null) {
-            totalHours = 3; // 默认3小时
-        }
         
-        // 1. 获取实时气象数据
+        // 2. 获取实时气象数据和预测气象数据
         Map<String, Object> weatherResult = weatherService.getRealtimeWeather(pointId);
         WeatherRealtime weatherData = extractWeatherData(weatherResult);
         
-        // 2. 获取阈值配置（使用默认飞行器）
+        // 3. 获取预测气象数据
+        Map<String, Object> forecastResult = weatherService.getWeatherForecastTrend(pointId);
+        List<WeatherForecast> forecastData = getForecastDataFromResult(forecastResult, pointId, totalHours);
+        
+        // 4. 获取阈值配置（使用默认飞行器）
         AircraftLimit thresholds = getDefaultAircraftLimits();
         
-        // 3. 计算适飞性（当前时间点）
-        SuitabilityResult currentResult = calculateCurrentSuitability(weatherData, thresholds);
+        // 5. 计算适飞性（当前时间点和未来时间点）
+        List<TimePointSuitability> timeSeries = calculateSuitabilityTimeSeries(weatherData, forecastData, thresholds, totalHours, pointId);
         
-        // 4. 生成时间序列数据（模拟未来预测）
-        List<TimePointSuitability> timeSeries = generateTimeSeriesSuitability(
-            currentResult, totalHours, pointId
-        );
-        
-        // 5. 保存计算结果到数据库
+        // 6. 保存计算结果到数据库
         saveSuitabilityAnalysis(pointId, timeSeries);
         
-        // 6. 格式化返回结果（兼容前端格式）
-        return formatSuitabilityResult(pointId, totalHours, timeSeries, currentResult);
+        // 7. 格式化返回结果（兼容前端格式）
+        SuitabilityResult currentResult = calculateCurrentSuitability(weatherData, thresholds);
+        return formatSuitabilityResult(pointId, totalHours, timeSeries, currentResult, factor);
+    }
+
+    /**
+     * 从数据库构建时间序列数据
+     */
+    private List<TimePointSuitability> buildTimeSeriesFromDatabase(List<SuitabilityAnalysis> analysisList, int totalHours, String pointId) {
+        Map<LocalDateTime, Map<String, SuitabilityFactor>> timePointMap = new TreeMap<>();
+        
+        // 解析数据库数据
+        for (SuitabilityAnalysis analysis : analysisList) {
+            LocalDateTime timePoint = analysis.getAnalysisTime();
+            String factorName = analysis.getFactor();
+            
+            timePointMap.computeIfAbsent(timePoint, k -> new HashMap<>());
+            
+            SuitabilityFactor factor = new SuitabilityFactor(
+                factorName,
+                analysis.getIsSuitable(),
+                analysis.getAbnormalValue().doubleValue()
+            );
+            
+            timePointMap.get(timePoint).put(factorName, factor);
+        }
+        
+        // 构建时间序列
+        List<TimePointSuitability> timeSeries = new ArrayList<>();
+        LocalDateTime now = LocalDateTime.now();
+        int timeInterval = 15; // 15分钟间隔    
+        int totalPoints = totalHours * 4 + 1; // 每小时4个点，加上当前时间点
+        
+        for (int i = 0; i < totalPoints; i++) {
+            LocalDateTime timePoint = now.plusMinutes(i * timeInterval);
+            
+            // 找到最接近的时间点数据
+            LocalDateTime closestTime = null;
+            for (LocalDateTime t : timePointMap.keySet()) {
+                if (t.isAfter(timePoint.minusMinutes(15)) && t.isBefore(timePoint.plusMinutes(15))) {
+                    closestTime = t;
+                    break;
+                }
+            }
+            
+            if (closestTime != null) {
+                TimePointSuitability timePointData = new TimePointSuitability();
+                timePointData.setTimePoint(timePoint);
+                timePointData.setPointId(pointId);
+                
+                List<SuitabilityFactor> factors = new ArrayList<>(timePointMap.get(closestTime).values());
+                timePointData.setFactors(factors);
+                
+                // 计算综合适飞指数
+                int suitableCount = (int) factors.stream().filter(SuitabilityFactor::isSuitable).count();
+                int totalCount = factors.size();
+                double pointSuitability = totalCount > 0 ? 
+                    (double) suitableCount / totalCount * 100 : 0.0;
+                
+                timePointData.setOverallSuitability(pointSuitability);
+                timeSeries.add(timePointData);
+            }
+        }
+        
+        return timeSeries;
+    }
+
+    /**
+     * 从数据库时间序列计算当前适飞结果
+     */
+    private SuitabilityResult calculateCurrentSuitabilityFromDatabase(List<TimePointSuitability> timeSeries) {
+        if (timeSeries.isEmpty()) {
+            return new SuitabilityResult();
+        }
+        
+        TimePointSuitability firstPoint = timeSeries.get(0);
+        SuitabilityResult result = new SuitabilityResult();
+        result.setCalculationTime(LocalDateTime.now());
+        result.setFactors(firstPoint.getFactors());
+        result.setOverallSuitability(firstPoint.getOverallSuitability());
+        result.setRecommendation(getRecommendation(firstPoint.getOverallSuitability()));
+        
+        return result;
+    }
+
+    /**
+     * 计算适飞性时间序列
+     */
+    private List<TimePointSuitability> calculateSuitabilityTimeSeries(
+        WeatherRealtime weatherData, List<WeatherForecast> forecastData, 
+        AircraftLimit thresholds, int totalHours, String pointId) {
+        
+        List<TimePointSuitability> timeSeries = new ArrayList<>();
+        LocalDateTime now = LocalDateTime.now();
+        int timeInterval = 15; // 15分钟间隔    
+        int totalPoints = totalHours * 4 + 1; // 每小时4个点，不包含当前时间点        
+        // 计算当前时间点
+        TimePointSuitability currentPoint = new TimePointSuitability();
+        currentPoint.setTimePoint(now);
+        currentPoint.setPointId(pointId);
+        
+        SuitabilityResult currentResult = calculateCurrentSuitability(weatherData, thresholds);
+        currentPoint.setFactors(currentResult.getFactors());
+        currentPoint.setOverallSuitability(currentResult.getOverallSuitability());
+        timeSeries.add(currentPoint);
+        
+        // 计算未来时间点
+        for (int i = 1; i < totalPoints; i++) {
+            LocalDateTime timePoint = now.plusMinutes(i * timeInterval);
+            
+            // 找到对应的预测数据
+            WeatherForecast forecast = findForecastByTime(forecastData, timePoint);
+            if (forecast != null) {
+                TimePointSuitability futurePoint = new TimePointSuitability();
+                futurePoint.setTimePoint(timePoint);
+                futurePoint.setPointId(pointId);
+                
+                List<SuitabilityFactor> factors = calculateForecastSuitability(forecast, thresholds);
+                futurePoint.setFactors(factors);
+                
+                // 计算综合适飞指数
+                int suitableCount = (int) factors.stream().filter(SuitabilityFactor::isSuitable).count();
+                int totalCount = factors.size();
+                double pointSuitability = totalCount > 0 ? 
+                    (double) suitableCount / totalCount * 100 : 0.0;
+                
+                futurePoint.setOverallSuitability(pointSuitability);
+                timeSeries.add(futurePoint);
+            }
+        }
+        
+        return timeSeries;
+    }
+
+    /**
+     * 从预测结果中提取WeatherForecast数据
+     */
+    private List<WeatherForecast> getForecastDataFromResult(Map<String, Object> forecastResult, String pointId, int totalHours) {
+        List<WeatherForecast> forecastData = new ArrayList<>();
+        
+        if (forecastResult != null && forecastResult.containsKey("data")) {
+            Map<String, Object> data = (Map<String, Object>) forecastResult.get("data");
+            
+            List<String> times = (List<String>) data.get("time");
+            List<Double> windSpeeds = (List<Double>) data.get("wind_speed_10m");
+            List<Integer> visibility = (List<Integer>) data.get("visibility");
+            List<Double> precipitation = (List<Double>) data.get("precipitation");
+            
+            if (times != null && !times.isEmpty()) {
+                for (int i = 0; i < times.size(); i++) {
+                    WeatherForecast forecast = new WeatherForecast();
+                    forecast.setPointId(pointId);
+                    
+                    // 处理时间字符串，添加当前日期并使用正确的格式解析
+                    String timeStr = times.get(i);
+                    LocalDate today = LocalDate.now();
+                    String dateTimeStr = today + " " + timeStr;
+                    DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+                    forecast.setForecastTime(LocalDateTime.parse(dateTimeStr, formatter));
+                    
+                    if (windSpeeds != null && i < windSpeeds.size()) {
+                        forecast.setWindSpeed(BigDecimal.valueOf(windSpeeds.get(i)));
+                    }
+                    
+                    if (visibility != null && i < visibility.size()) {
+                        forecast.setVisibility(BigDecimal.valueOf(visibility.get(i) / 1000.0)); // 转换为km
+                    }
+                    
+                    if (precipitation != null && i < precipitation.size()) {
+                        forecast.setPrecipitation(BigDecimal.valueOf(precipitation.get(i)));
+                    }
+                    
+                    forecastData.add(forecast);
+                }
+            }
+        }
+        
+        return forecastData;
+    }
+
+    /**
+     * 根据时间找到对应的预测数据
+     */
+    private WeatherForecast findForecastByTime(List<WeatherForecast> forecastData, LocalDateTime timePoint) {
+        for (WeatherForecast forecast : forecastData) {
+            LocalDateTime forecastTime = forecast.getForecastTime();
+            if (forecastTime.isAfter(timePoint.minusMinutes(30)) && forecastTime.isBefore(timePoint.plusMinutes(30))) {
+                return forecast;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 计算预测数据的适飞性
+     */
+    private List<SuitabilityFactor> calculateForecastSuitability(WeatherForecast forecast, AircraftLimit thresholds) {
+        List<SuitabilityFactor> factors = new ArrayList<>();
+        
+        // 1. 风速适飞性
+        BigDecimal windSpeed = forecast.getWindSpeed();
+        boolean windSuitable = windSpeed != null && windSpeed.compareTo(thresholds.getMaxWindSpeed()) <= 0;
+        factors.add(new SuitabilityFactor("风", windSuitable, windSpeed != null ? windSpeed.doubleValue() : 0.0));
+        
+        // 2. 能见度适飞性
+        BigDecimal visibility = forecast.getVisibility();
+        boolean visibilitySuitable = visibility != null && 
+            visibility.compareTo(thresholds.getMinVisibility()) >= 0;
+        factors.add(new SuitabilityFactor("能见度", visibilitySuitable, 
+            visibility != null ? visibility.doubleValue() : 0.0));
+        
+        // 3. 降水量适飞性
+        BigDecimal precipitation = forecast.getPrecipitation();
+        boolean precipitationSuitable = precipitation != null && 
+            precipitation.compareTo(thresholds.getMaxPrecipitation()) <= 0;
+        factors.add(new SuitabilityFactor("降水", precipitationSuitable, 
+            precipitation != null ? precipitation.doubleValue() : 0.0));
+        
+        // 4. 湿度适飞性（使用默认值，因为预报数据中可能没有）
+        boolean humiditySuitable = true; // 默认为适飞
+        factors.add(new SuitabilityFactor("湿度", humiditySuitable, 0.0));
+        
+        // 5. 风切变适飞性（使用默认值，因为预报数据中可能没有）
+        boolean windShearSuitable = true; // 默认为适飞
+        factors.add(new SuitabilityFactor("风切变", windShearSuitable, 2.0)); // 默认为低等级
+        
+        // 6. 湍流/稳定度适飞性（使用默认值，因为预报数据中可能没有）
+        boolean turbulenceSuitable = true; // 默认为适飞
+        factors.add(new SuitabilityFactor("湍流", turbulenceSuitable, 0.3)); // 默认为稳定
+        
+        return factors;
     }
 
     /**
@@ -87,16 +315,7 @@ public class SuitabilityService {
             return (WeatherRealtime) weatherResult.get("data");
         }
         
-        // 如果没有数据，创建默认数据
-        WeatherRealtime defaultData = new WeatherRealtime();
-        defaultData.setTemp(BigDecimal.valueOf(25.0));
-        defaultData.setWindSpeed(BigDecimal.valueOf(8.0)); // km/h，需要转换
-        defaultData.setVis(BigDecimal.valueOf(10.0));
-        defaultData.setPrecip(BigDecimal.valueOf(0.0));
-        defaultData.setHumidity(65);
-        defaultData.setWindShearLevel("low");
-        defaultData.setStabilityIndex("B");
-        return defaultData;
+        return null;
     }
 
     /**
@@ -106,24 +325,9 @@ public class SuitabilityService {
         // 先尝试获取默认飞行器限制
         AircraftLimit limit = aircraftLimitMapper.selectOne(
             new LambdaQueryWrapper<AircraftLimit>()
-                .eq(AircraftLimit::getAircraftId, "aircraft-1")
+                .eq(AircraftLimit::getAircraftId, "default")
                 .last("LIMIT 1")
         );
-        
-        if (limit == null) {
-            // 创建默认阈值
-            limit = new AircraftLimit();
-            limit.setAircraftId("aircraft-1");
-            limit.setMaxWindSpeed(BigDecimal.valueOf(12.0)); // 12 m/s
-            limit.setMaxWindShear(BigDecimal.valueOf(5.0));  // 5 m/s
-            limit.setMinVisibility(BigDecimal.valueOf(1.5)); // 1.5 km
-            limit.setMaxPrecipitation(BigDecimal.valueOf(5.0)); // 5 mm/h
-            limit.setMaxHumidity(90); // 90%
-            limit.setTempMin(BigDecimal.valueOf(-10.0)); // -10°C
-            limit.setTempMax(BigDecimal.valueOf(40.0));  // 40°C
-            limit.setMaxTurbulenceLevel("moderate");
-        }
-        
         return limit;
     }
 
@@ -194,65 +398,6 @@ public class SuitabilityService {
     }
 
     /**
-     * 生成时间序列适飞数据（模拟未来预测）
-     */
-    private List<TimePointSuitability> generateTimeSeriesSuitability(
-        SuitabilityResult currentResult, int totalHours, String pointId) {
-        
-        List<TimePointSuitability> timeSeries = new ArrayList<>();
-        LocalDateTime now = LocalDateTime.now();
-        int timeInterval = 10; // 10分钟间隔
-        
-        // 计算总时间点数
-        int totalPoints = (totalHours * 60) / timeInterval + 1;
-        
-        for (int i = 0; i < totalPoints; i++) {
-            LocalDateTime timePoint = now.plusMinutes(i * timeInterval);
-            
-            // 模拟未来数据变化（基于当前结果添加随机波动）
-            TimePointSuitability timePointData = new TimePointSuitability();
-            timePointData.setTimePoint(timePoint);
-            timePointData.setPointId(pointId);
-            
-            // 复制当前因素，添加时间衰减和随机波动
-            List<SuitabilityFactor> futureFactors = new ArrayList<>();
-            for (SuitabilityFactor currentFactor : currentResult.getFactors()) {
-                // 模拟未来变化：随时间增加不适飞概率
-                double timeFactor = 1.0 - (i * 0.02 / totalPoints); // 随时间衰减
-                double randomFactor = 0.9 + Math.random() * 0.2; // 随机波动
-                
-                boolean futureSuitable = currentFactor.isSuitable();
-                if (Math.random() < 0.1 * (i / (double) totalPoints)) {
-                    futureSuitable = !futureSuitable; // 随时间增加状态变化的概率
-                }
-                
-                double futureValue = currentFactor.getValue() * timeFactor * randomFactor;
-                
-                SuitabilityFactor futureFactor = new SuitabilityFactor(
-                    currentFactor.getName(),
-                    futureSuitable,
-                    futureValue
-                );
-                futureFactors.add(futureFactor);
-            }
-            
-            timePointData.setFactors(futureFactors);
-            
-            // 计算该时间点的综合适飞指数
-            int suitableCount = (int) futureFactors.stream()
-                .filter(SuitabilityFactor::isSuitable).count();
-            int totalCount = futureFactors.size();
-            double pointSuitability = totalCount > 0 ? 
-                (double) suitableCount / totalCount * 100 : 0.0;
-            
-            timePointData.setOverallSuitability(pointSuitability);
-            timeSeries.add(timePointData);
-        }
-        
-        return timeSeries;
-    }
-
-    /**
      * 保存适飞分析结果到数据库
      */
     private void saveSuitabilityAnalysis(String pointId, List<TimePointSuitability> timeSeries) {
@@ -270,8 +415,8 @@ public class SuitabilityService {
                 SuitabilityAnalysis analysis = new SuitabilityAnalysis();
                 analysis.setPointId(pointId);
                 analysis.setAnalysisTime(timePoint.getTimePoint());
-                analysis.setTimeInterval(10); // 10分钟间隔
-                analysis.setTotalHours(timeSeries.size() * 10 / 60); // 计算总小时数
+                analysis.setTimeInterval(15); // 15分钟间隔
+                analysis.setTotalHours(timeSeries.size() * 15 / 60); // 计算总小时数
                 // 确保因素名称不超过数据库字段长度限制
                 String factorName = factor.getName();
                 if (factorName.length() > 50) {
@@ -296,85 +441,57 @@ public class SuitabilityService {
      */
     private Map<String, Object> formatSuitabilityResult(
         String pointId, int totalHours, 
-        List<TimePointSuitability> timeSeries, SuitabilityResult currentResult) {
+        List<TimePointSuitability> timeSeries, SuitabilityResult currentResult, String factor) {
         
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("updateTime", LocalDateTime.now().toString());
-        result.put("pointId", pointId);
-        result.put("totalHours", totalHours);
-        result.put("timeInterval", 10); // 10分钟间隔
         
-        // 构建前端需要的热力图数据结构
-        List<Map<String, Object>> suitabilityList = new ArrayList<>();
+        // 构建前端需要的数据结构
+        List<String> factors = new ArrayList<>();
+        List<List<Integer>> statusData = new ArrayList<>();
+        List<List<Double>> valueData = new ArrayList<>();
         
         // 按因素组织数据
         if (!timeSeries.isEmpty() && !timeSeries.get(0).getFactors().isEmpty()) {
             TimePointSuitability firstPoint = timeSeries.get(0);
             
-            for (SuitabilityFactor factor : firstPoint.getFactors()) {
-                Map<String, Object> factorData = new LinkedHashMap<>();
-                factorData.put("factor", factor.getName());
+            for (SuitabilityFactor factorItem : firstPoint.getFactors()) {
+                // 如果指定了因素，只返回该因素
+                if (factor != null && !factor.isEmpty() && !factorItem.getName().equals(factor)) {
+                    continue;
+                }
                 
-                // 构建detail数组
-                List<Map<String, Object>> details = new ArrayList<>();
+                factors.add(factorItem.getName());
+                
+                // 构建该因素的statusData和valueData
+                List<Integer> statusList = new ArrayList<>();
+                List<Double> valueList = new ArrayList<>();
+                
                 for (TimePointSuitability timePoint : timeSeries) {
                     // 找到对应因素的数据
                     SuitabilityFactor timeFactor = timePoint.getFactors().stream()
-                        .filter(f -> f.getName().equals(factor.getName()))
+                        .filter(f -> f.getName().equals(factorItem.getName()))
                         .findFirst()
                         .orElse(null);
                     
                     if (timeFactor != null) {
-                        Map<String, Object> detail = new HashMap<>();
-                        detail.put("timePoint", timePoint.getTimePoint().toString());
-                        detail.put("statusData", timeFactor.isSuitable());
-                        detail.put("valueData", String.format("%.1f", timeFactor.getValue()));
-                        details.add(detail);
+                        statusList.add(timeFactor.isSuitable() ? 1 : 0);
+                        valueList.add(Math.round(timeFactor.getValue() * 100.0) / 100.0);
                     }
                 }
                 
-                factorData.put("detail", details);
-                suitabilityList.add(factorData);
+                statusData.add(statusList);
+                valueData.add(valueList);
             }
         }
         
-        result.put("suitabilityList", suitabilityList);
-        
-        // 添加综合评分数据
-        List<Double> overallScores = timeSeries.stream()
-            .map(TimePointSuitability::getOverallSuitability)
-            .toList();
-        result.put("overallScores", overallScores);
-        
-        // 添加元数据
-        Map<String, Object> metadata = new HashMap<>();
-        metadata.put("calculationMethod", "real_time_analysis");
-        metadata.put("thresholdSource", "aircraft_limits");
-        metadata.put("weatherDataSource", "qweather_api");
-        metadata.put("generatedAt", LocalDateTime.now().toString());
-        result.put("metadata", metadata);
+        result.put("factors", factors);
+        result.put("statusData", statusData);
+        result.put("valueData", valueData);
         
         return result;
     }
 
-    /**
-     * 获取适飞热力图数据 - 按区域空间维度（保持原逻辑）
-     */
-    public Map<String, Object> getSuitabilityHeatmap(String timePoint, String factor) {
-        LambdaQueryWrapper<SuitabilityAnalysis> wrapper = new LambdaQueryWrapper<SuitabilityAnalysis>()
-                .eq(factor != null && !factor.isEmpty(), SuitabilityAnalysis::getFactor, factor)
-                .orderByDesc(SuitabilityAnalysis::getAnalysisTime)
-                .last("LIMIT 200");
 
-        List<SuitabilityAnalysis> list = suitabilityAnalysisMapper.selectList(wrapper);
-
-        Map<String, Object> result = new HashMap<>();
-        result.put("updateTime", LocalDateTime.now().toString());
-        result.put("timePoint", timePoint);
-        result.put("factor", factor);
-        result.put("data", list);
-        return result;
-    }
 
     // ==================== 垂直剖面 ====================
 
