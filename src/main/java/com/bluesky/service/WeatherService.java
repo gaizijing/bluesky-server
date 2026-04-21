@@ -25,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
 import java.util.*;
 import java.util.zip.GZIPInputStream;
 
@@ -43,8 +44,27 @@ public class WeatherService {
     private final AircraftLimitMapper aircraftLimitMapper;
     private final MonitoringPointService monitoringPointService;
     private final RegionConfig regionConfig;
+    private static final int CITYWIDE_MAX_SOURCE_POINTS = 15000;
+    private static final int IDW_NEIGHBOR_LIMIT = 20;
+    private static final double IDW_POWER = 2.0d;
+    private static final int CITYWIDE_SYNTHETIC_THRESHOLD = 1200;
+    private static final int CITYWIDE_GAUSSIAN_NEIGHBOR_LIMIT = 30;
+    private static final int CITYWIDE_FAST_GRID_SIZE = 70;
+    private static final int CITYWIDE_FAST_MAX_POINTS = 12000;
 
-    // ==================== 实时气象 ====================
+    private static final class IdwSamplePoint {
+        private final double lng;
+        private final double lat;
+        private final double value;
+
+        private IdwSamplePoint(double lng, double lat, double value) {
+            this.lng = lng;
+            this.lat = lat;
+            this.value = value;
+        }
+    }
+
+    // ==================== 鐎圭偞妞傚鏃囪杽 ====================
 
     /**
      * 获取重点关注区域实时气象数据
@@ -151,138 +171,134 @@ public class WeatherService {
      * @param pointIds 监测点ID列表，null表示区域级
      * @return 热力图数据
      */
-    private Map<String, Object> generateCommonHeatmapData(String bounds, List<String> pointIds) {
-        // 解析边界框
+    private List<Map<String, Object>> generateCommonHeatmapData(String bounds, List<String> pointIds, LocalDateTime targetTime) {
         double[] bbox = parseBoundingBox(bounds);
-
-        // 获取阈值配置
-        // 生成热力图数据
-        List<Map<String, Object>> points = new ArrayList<>();
-        // 获取数据库中的真实气象数据点
-        if (pointIds != null && !pointIds.isEmpty()) {
-            // 查询指定监测点的数据
-            for (String pointId : pointIds) {
-                // 获取监测点信息，使用该监测点的边界框
-                MonitoringPoint p = monitoringPointService.getById(pointId);
-                if (p == null || p.getBboxMinLng() == null || p.getBboxMaxLng() == null) {
-                    continue;
-                }
-
-                double pointMinLng = p.getBboxMinLng().doubleValue();
-                double pointMinLat = p.getBboxMinLat().doubleValue();
-                double pointMaxLng = p.getBboxMaxLng().doubleValue();
-                double pointMaxLat = p.getBboxMaxLat().doubleValue();
-
-                List<MicroscaleWeather> weatherList = getWeatherPointsFromDatabase(pointId, bbox);
-                for (MicroscaleWeather weather : weatherList) {
-                    // 计算经纬度坐标（基于网格坐标和该监测点的边界框）
-                    int gridSize = weather.getGridSize() != null ? weather.getGridSize() : 10;
-                    double gridX = weather.getGridX() != null ? weather.getGridX().doubleValue() : 0;
-                    double gridY = weather.getGridY() != null ? weather.getGridY().doubleValue() : 0;
-
-                    double lng = pointMinLng + (pointMaxLng - pointMinLng) * (gridX / (double) (gridSize - 1));
-                    double lat = pointMinLat + (pointMaxLat - pointMinLat) * (gridY / (double) (gridSize - 1));
-
-                    // 构建点数据
-                    Map<String, Object> point = new HashMap<>();
-                    point.put("lon", lng);
-                    point.put("lat", lat);
-                    point.put("value", weather.getRiskLevel() * 25); // 转换为 0-100 范围
-                    point.put("x", gridX);
-                    point.put("y", gridY);
-                    point.put("riskLevel", getRiskLevel(weather.getRiskLevel() * 25));
-                    point.put("windSpeed", weather.getWindSpeed());
-                    point.put("windShear", weather.getWindShear());
-                    point.put("turbulence", weather.getTurbulence());
-
-                    points.add(point);
-                }
-
-            }
-
-        } else {
-            // 区域级查询，查询所有监测点的数据
-            List<MonitoringPoint> allPoints = monitoringPointService.getAll();
-            for (MonitoringPoint p : allPoints) {
-                if (p.getBboxMinLng() == null || p.getBboxMaxLng() == null) {
-                    continue;
-                }
-
-                double pointMinLng = p.getBboxMinLng().doubleValue();
-                double pointMinLat = p.getBboxMinLat().doubleValue();
-                double pointMaxLng = p.getBboxMaxLng().doubleValue();
-                double pointMaxLat = p.getBboxMaxLat().doubleValue();
-
-                List<MicroscaleWeather> weatherList = getWeatherPointsFromDatabase(p.getId(), bbox);
-                for (MicroscaleWeather weather : weatherList) {
-                    // 计算经纬度坐标（基于网格坐标和该监测点的边界框）
-                    int gridSize = weather.getGridSize() != null ? weather.getGridSize() : 10;
-                    double gridX = weather.getGridX() != null ? weather.getGridX().doubleValue() : 0;
-                    double gridY = weather.getGridY() != null ? weather.getGridY().doubleValue() : 0;
-
-                    double lng = pointMinLng + (pointMaxLng - pointMinLng) * (gridX / (double) (gridSize - 1));
-                    double lat = pointMinLat + (pointMaxLat - pointMinLat) * (gridY / (double) (gridSize - 1));
-
-                    // 构建点数据
-                    Map<String, Object> point = new HashMap<>();
-                    point.put("lon", lng);
-                    point.put("lat", lat);
-                    point.put("value", weather.getRiskLevel() * 25); // 转换为 0-100 范围
-                    point.put("x", gridX);
-                    point.put("y", gridY);
-                    point.put("riskLevel", getRiskLevel(weather.getRiskLevel() * 25));
-                    point.put("windSpeed", weather.getWindSpeed());
-                    point.put("windShear", weather.getWindShear());
-                    point.put("turbulence", weather.getTurbulence());
-
-                    points.add(point);
-                }
-
-            }
+        if (bbox == null) {
+            return Collections.emptyList();
         }
 
-        // 构建返回结果
-        Map<String, Object> result = new HashMap<>();
-        result.put("points", points);
-        result.put("bounds", bounds);
-        result.put("pointCount", points.size());
-        result.put("metadata", Map.of(
-                "dataType", "geo_heatmap",
-                "unit", "风险指数(0-100)",
-                "calculationMethod", "geo_weather_based_risk",
-                "generatedAt", LocalDateTime.now().toString()));
+        List<MonitoringPoint> monitorPoints = new ArrayList<>();
+        if (pointIds != null && !pointIds.isEmpty()) {
+            for (String pointId : pointIds) {
+                if (pointId == null || pointId.isEmpty()) {
+                    continue;
+                }
+                MonitoringPoint point = monitoringPointService.getById(pointId);
+                if (point != null) {
+                    monitorPoints.add(point);
+                }
+            }
+        } else {
+            monitorPoints.addAll(monitoringPointService.getAll());
+        }
 
-        return result;
+        List<Map<String, Object>> points = new ArrayList<>();
+        for (MonitoringPoint point : monitorPoints) {
+            points.addAll(buildHeatmapPointsForMonitor(point, targetTime));
+        }
+        return points;
+    }
+
+    private List<Map<String, Object>> buildHeatmapPointsForMonitor(MonitoringPoint monitor, LocalDateTime targetTime) {
+        if (monitor == null || monitor.getBboxMinLng() == null || monitor.getBboxMinLat() == null
+                || monitor.getBboxMaxLng() == null || monitor.getBboxMaxLat() == null) {
+            return Collections.emptyList();
+        }
+
+        double pointMinLng = monitor.getBboxMinLng().doubleValue();
+        double pointMinLat = monitor.getBboxMinLat().doubleValue();
+        double pointMaxLng = monitor.getBboxMaxLng().doubleValue();
+        double pointMaxLat = monitor.getBboxMaxLat().doubleValue();
+
+        List<MicroscaleWeather> weatherList = getWeatherPointsFromDatabase(monitor.getId(), targetTime);
+        List<Map<String, Object>> points = new ArrayList<>(weatherList.size());
+
+        for (MicroscaleWeather weather : weatherList) {
+            int gridSize = weather.getGridSize() != null ? weather.getGridSize() : 10;
+            if (gridSize <= 1) {
+                continue;
+            }
+
+            if (weather.getGridX() == null || weather.getGridY() == null || weather.getRiskLevel() == null) {
+                continue;
+            }
+
+            double gridX = weather.getGridX().doubleValue();
+            double gridY = weather.getGridY().doubleValue();
+            double lng = pointMinLng + (pointMaxLng - pointMinLng) * (gridX / (double) (gridSize - 1));
+            double lat = pointMinLat + (pointMaxLat - pointMinLat) * (gridY / (double) (gridSize - 1));
+
+            Map<String, Object> point = new HashMap<>();
+            point.put("lnglat", Arrays.asList(lng, lat));
+            point.put("value", weather.getRiskLevel());
+            if (weather.getReason() != null && !weather.getReason().isBlank()) {
+                point.put("reason", weather.getReason());
+            }
+            if (weather.getWindSpeed() != null) {
+                point.put("windSpeed", weather.getWindSpeed());
+            }
+            if (weather.getWindShear() != null) {
+                point.put("windShear", weather.getWindShear());
+            }
+            if (weather.getTurbulence() != null) {
+                point.put("turbulence", weather.getTurbulence());
+            }
+            point.put("gridX", gridX);
+            point.put("gridY", gridY);
+            point.put("gridSize", gridSize);
+            point.put("bboxMinLng", pointMinLng);
+            point.put("bboxMinLat", pointMinLat);
+            point.put("bboxMaxLng", pointMaxLng);
+            point.put("bboxMaxLat", pointMaxLat);
+            points.add(point);
+        }
+        return points;
     }
 
     /**
-     * 获取地理空间热力图数据（地图用）
-     *
-     * @param bounds     边界框坐标，格式：[minLng,minLat,maxLng,maxLat]
-     * @param time       时间，ISO格式
-     * @param resolution 分辨率：low/medium/high
-     * @param pointId    监测点ID
+     * Read one snapshot (same data_time) for a monitoring point.
+     */
+    private List<MicroscaleWeather> getWeatherPointsFromDatabase(String pointId, LocalDateTime targetTime) {
+        if (pointId == null || pointId.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        LambdaQueryWrapper<MicroscaleWeather> latestQuery = new LambdaQueryWrapper<MicroscaleWeather>()
+                .eq(MicroscaleWeather::getPointId, pointId);
+        if (targetTime != null) {
+            latestQuery.le(MicroscaleWeather::getDataTime, targetTime);
+        }
+        latestQuery.orderByDesc(MicroscaleWeather::getDataTime).last("LIMIT 1");
+
+        MicroscaleWeather latest = microscaleWeatherMapper.selectOne(latestQuery);
+        if (latest == null || latest.getDataTime() == null) {
+            return Collections.emptyList();
+        }
+
+        return microscaleWeatherMapper.selectList(
+                new LambdaQueryWrapper<MicroscaleWeather>()
+                        .eq(MicroscaleWeather::getPointId, pointId)
+                        .eq(MicroscaleWeather::getDataTime, latest.getDataTime())
+                        .orderByAsc(MicroscaleWeather::getGridY)
+                        .orderByAsc(MicroscaleWeather::getGridX));
+    }
+
+    /**
+     * Build area-mode heatmap data.
      */
     public Map<String, Object> getWeatherHeatmapGeo(String bounds, String time, String pointId) {
-        // 生成地理空间风险分布数据（给Cesium地图用）
-        List<String> pointIds = Collections.singletonList(pointId);
-        Map<String, Object> heatmapData = generateCommonHeatmapData(bounds, pointIds);
+        LocalDateTime targetTime = parseRequestTime(time);
+        List<Map<String, Object>> points = generateCommonHeatmapData(bounds, Collections.singletonList(pointId), targetTime);
 
         Map<String, Object> result = new HashMap<>();
-        result.put("updateTime", LocalDateTime.now().toString());
-        result.put("bounds", bounds);
-        result.put("time", time != null ? time : LocalDateTime.now().toString());
-        result.put("pointId", pointId);
-        result.put("data", heatmapData);
-        result.put("dataType", "geo_heatmap");
-
+        result.put("data", points);
         return result;
     }
 
-    // ==================== 工具方法 ====================
+    // ==================== 瀹搞儱鍙块弬瑙勭《 ====================
 
     /**
-     * 调用和风天气API
+     * 鐠嬪啰鏁ら崪宀勵棑婢垛晜鐨礎PI
      */
     private Map<String, Object> callQWeatherAPI(double longitude, double latitude) {
         RestTemplate restTemplate = new RestTemplate();
@@ -315,21 +331,21 @@ public class WeatherService {
 
                     // 解压数据
                     String responseBody;
-                   // if (isGzipped) {
-                        try (ByteArrayInputStream bais = new ByteArrayInputStream(responseBodyBytes);
-                                GZIPInputStream gis = new GZIPInputStream(bais);
-                                InputStreamReader isr = new InputStreamReader(gis, StandardCharsets.UTF_8);
-                                BufferedReader br = new BufferedReader(isr)) {
-                            StringBuilder sb = new StringBuilder();
-                            String line;
-                            while ((line = br.readLine()) != null) {
-                                sb.append(line);
-                            }
-                            responseBody = sb.toString();
+                    // if (isGzipped) {
+                    try (ByteArrayInputStream bais = new ByteArrayInputStream(responseBodyBytes);
+                            GZIPInputStream gis = new GZIPInputStream(bais);
+                            InputStreamReader isr = new InputStreamReader(gis, StandardCharsets.UTF_8);
+                            BufferedReader br = new BufferedReader(isr)) {
+                        StringBuilder sb = new StringBuilder();
+                        String line;
+                        while ((line = br.readLine()) != null) {
+                            sb.append(line);
                         }
-                  //  } else {
-                  //      responseBody = new String(responseBodyBytes, StandardCharsets.UTF_8);
-                   // }
+                        responseBody = sb.toString();
+                    }
+                    // } else {
+                    // responseBody = new String(responseBodyBytes, StandardCharsets.UTF_8);
+                    // }
 
                     // 解析 JSON 响应
                     ObjectMapper objectMapper = new ObjectMapper();
@@ -366,309 +382,84 @@ public class WeatherService {
                 }
             }
         } catch (Exception e) {
-            log.error("调用和风天气 API 失败: {}", e.getMessage(), e);
+            log.error("璋冪敤鍜岄澶╂皵 API 澶辫触: {}", e.getMessage(), e);
         }
 
         return null;
     }
 
-    /**
-     * 生成基于气象数据和阈值配置的风险热力图数据
-     */
-    private Map<String, Object> generateMockHeatmapData(String pointId, String timeRange, String resolution,
-            String bounds, Boolean forRouteAnalysis) {
-
-        // 1. 获取实时气象数据
-        Map<String, Object> weatherResult = getRealtimeWeather(pointId);
-        WeatherRealtime weatherData = extractWeatherData(weatherResult);
-
-        // 2. 获取阈值配置
-        AircraftLimit thresholds = getDefaultAircraftLimits();
-
-        // 3. 计算基础风险值（基于气象数据和阈值）
-        double baseRisk = calculateBaseRiskFromWeather(weatherData, thresholds);
-
-        // 4. 根据时间范围确定时间点数量
-        int timeCount = 7; // 默认7个时间点
-        int timeInterval = 30; // 默认30分钟间隔
-
-        if ("1h".equals(timeRange)) {
-            timeCount = 7; // 1小时，10分钟间隔
-            timeInterval = 10;
-        } else if ("3h".equals(timeRange)) {
-            timeCount = 7; // 3小时，30分钟间隔
-            timeInterval = 30;
-        } else if ("6h".equals(timeRange)) {
-            timeCount = 13; // 6小时，30分钟间隔
-            timeInterval = 30;
-        } else if ("12h".equals(timeRange)) {
-            timeCount = 25; // 12小时，30分钟间隔
-            timeInterval = 30;
+    private LocalDateTime parseRequestTime(String time) {
+        if (time == null || time.trim().isEmpty()) {
+            return null;
         }
 
-        // 5. 根据分辨率确定高度层数量
-        int heightCount = 8; // 默认8个高度层
-        int heightInterval = 50; // 默认50米间隔
-
-        if ("low".equals(resolution)) {
-            heightCount = 5;
-            heightInterval = 100;
-        } else if ("medium".equals(resolution)) {
-            heightCount = 8;
-            heightInterval = 50;
-        } else if ("high".equals(resolution)) {
-            heightCount = 16;
-            heightInterval = 25;
+        String normalized = time.trim();
+        try {
+            return LocalDateTime.parse(normalized);
+        } catch (Exception ignored) {
         }
 
-        // 6. 生成时间标签
-        List<String> times = new ArrayList<>();
-        LocalDateTime baseTime = LocalDateTime.now();
-        for (int i = 0; i < timeCount; i++) {
-            LocalDateTime time = baseTime.plusMinutes(i * timeInterval);
-            times.add(String.format("%02d:%02d", time.getHour(), time.getMinute()));
+        try {
+            return OffsetDateTime.parse(normalized).toLocalDateTime();
+        } catch (Exception ignored) {
         }
 
-        // 7. 生成高度标签
-        List<Integer> heights = new ArrayList<>();
-        for (int i = 0; i < heightCount; i++) {
-            heights.add(i * heightInterval);
+        log.warn("Failed to parse request time: {}", time);
+        return null;
+    }
+
+    private int resolveCitywideGridSize() {
+        return 100;
+    }
+
+    private List<IdwSamplePoint> toIdwSamples(List<Map<String, Object>> rawPoints) {
+        if (rawPoints == null || rawPoints.isEmpty()) {
+            return Collections.emptyList();
         }
 
-        // 8. 生成风险热力图数据（基于气象数据的时空变化）
-        List<List<Integer>> data = new ArrayList<>();
-
-        for (int h = 0; h < heightCount; h++) {
-            List<Integer> row = new ArrayList<>();
-            // 高度因子：高度越高，风险通常越低
-            double heightFactor = calculateHeightFactor(h, heightCount, weatherData);
-
-            for (int t = 0; t < timeCount; t++) {
-                // 时间因子：随时间变化的风险
-                double timeFactor = calculateTimeFactor(t, timeCount, baseTime);
-
-                // 气象变化因子：基于当前气象数据的随机波动
-                double weatherFactor = calculateWeatherFactor(weatherData, h, t);
-
-                // 计算综合风险值（0-100）
-                int riskValue = calculateRiskValue(baseRisk, heightFactor, timeFactor, weatherFactor,
-                        forRouteAnalysis != null && forRouteAnalysis);
-
-                row.add(riskValue);
+        List<IdwSamplePoint> samples = new ArrayList<>(rawPoints.size());
+        for (Map<String, Object> point : rawPoints) {
+            Object lnglatObj = point.get("lnglat");
+            if (!(lnglatObj instanceof List<?> lnglat) || lnglat.size() < 2) {
+                continue;
             }
-            data.add(row);
+
+            Double lng = toDouble(lnglat.get(0));
+            Double lat = toDouble(lnglat.get(1));
+            Double value = toDouble(point.get("value"));
+            if (lng == null || lat == null || value == null) {
+                continue;
+            }
+            samples.add(new IdwSamplePoint(lng, lat, value));
         }
 
-        // 9. 构建返回结果
-        Map<String, Object> result = new HashMap<>();
-        result.put("times", times);
-        result.put("heights", heights);
-        result.put("data", data);
-        result.put("metadata", Map.of(
-                "pointId", pointId,
-                "timeRange", timeRange,
-                "resolution", resolution,
-                "forRouteAnalysis", forRouteAnalysis != null ? forRouteAnalysis : false,
-                "dataType", "flight_risk_heatmap",
-                "unit", "风险指数(0-100)",
-                "calculationMethod", "weather_based_risk_assessment",
-                "weatherData", Map.of(
-                        "windSpeed", weatherData.getWindSpeed(),
-                        "visibility", weatherData.getVis(),
-                        "precipitation", weatherData.getPrecip(),
-                        "humidity", weatherData.getHumidity(),
-                        "windShearLevel", weatherData.getWindShearLevel(),
-                        "stabilityIndex", weatherData.getStabilityIndex()),
-                "thresholds", Map.of(
-                        "maxWindSpeed", thresholds.getMaxWindSpeed(),
-                        "minVisibility", thresholds.getMinVisibility(),
-                        "maxPrecipitation", thresholds.getMaxPrecipitation(),
-                        "maxHumidity", thresholds.getMaxHumidity()),
-                "generatedAt", LocalDateTime.now().toString()));
-
-        return result;
-
+        return limitSampleCount(samples);
     }
 
-    /**
-     * 从天气结果中提取WeatherRealtime对象
-     */
-    private WeatherRealtime extractWeatherData(Map<String, Object> weatherResult) {
-        if (weatherResult != null && weatherResult.get("data") instanceof WeatherRealtime) {
-            return (WeatherRealtime) weatherResult.get("data");
+    private List<IdwSamplePoint> limitSampleCount(List<IdwSamplePoint> samples) {
+        if (samples == null || samples.isEmpty()) {
+            return Collections.emptyList();
         }
 
-        // 如果没有数据，创建默认数据
-        WeatherRealtime defaultData = new WeatherRealtime();
-        defaultData.setWindSpeed(BigDecimal.valueOf(8.0)); // km/h
-        defaultData.setVis(BigDecimal.valueOf(10.0)); // km
-        defaultData.setPrecip(BigDecimal.valueOf(0.0)); // mm
-        defaultData.setHumidity(65); // %
-        defaultData.setWindShearLevel("low");
-        defaultData.setStabilityIndex("B");
-        return defaultData;
+        if (samples.size() <= CITYWIDE_MAX_SOURCE_POINTS) {
+            return samples;
+        }
+
+        int step = (int) Math.ceil(samples.size() / (double) CITYWIDE_MAX_SOURCE_POINTS);
+        List<IdwSamplePoint> downSampled = new ArrayList<>(CITYWIDE_MAX_SOURCE_POINTS);
+        for (int i = 0; i < samples.size(); i += step) {
+            downSampled.add(samples.get(i));
+        }
+        return downSampled;
     }
 
-    /**
-     * 获取默认飞行器阈值配置
-     */
-    private AircraftLimit getDefaultAircraftLimits() {
-        AircraftLimit limit = aircraftLimitMapper.selectOne(
-                new LambdaQueryWrapper<AircraftLimit>()
-                        .eq(AircraftLimit::getAircraftId, "aircraft-1")
-                        .last("LIMIT 1"));
-
-        if (limit == null) {
-            limit = new AircraftLimit();
-            limit.setMaxWindSpeed(BigDecimal.valueOf(12.0));
-            limit.setMinVisibility(BigDecimal.valueOf(1.5));
-            limit.setMaxPrecipitation(BigDecimal.valueOf(5.0));
-            limit.setMaxHumidity(90);
+    private List<IdwSamplePoint> buildEnhancedCitywideSamples(List<IdwSamplePoint> rawSamples, double[] bbox, int gridSize) {
+        if (rawSamples == null || rawSamples.isEmpty() || bbox == null || bbox.length < 4) {
+            return Collections.emptyList();
         }
 
-        return limit;
-    }
-
-    /**
-     * 基于气象数据和阈值计算基础风险值
-     */
-    private double calculateBaseRiskFromWeather(WeatherRealtime weather, AircraftLimit thresholds) {
-        double totalRisk = 0.0;
-        int factorCount = 0;
-
-        // 1. 风速风险
-        BigDecimal windSpeedKmh = weather.getWindSpeed();
-        if (windSpeedKmh != null && thresholds.getMaxWindSpeed() != null) {
-            BigDecimal windSpeedMs = windSpeedKmh.multiply(BigDecimal.valueOf(1000.0 / 3600.0));
-            double windRisk = windSpeedMs.compareTo(thresholds.getMaxWindSpeed()) > 0 ? 0.8 : 0.3;
-            totalRisk += windRisk;
-            factorCount++;
-        }
-
-        // 2. 能见度风险
-        BigDecimal visibility = weather.getVis();
-        if (visibility != null && thresholds.getMinVisibility() != null) {
-            double visibilityRisk = visibility.compareTo(thresholds.getMinVisibility()) < 0 ? 0.7 : 0.2;
-            totalRisk += visibilityRisk;
-            factorCount++;
-        }
-
-        // 3. 降水量风险
-        BigDecimal precipitation = weather.getPrecip();
-        if (precipitation != null && thresholds.getMaxPrecipitation() != null) {
-            double precipitationRisk = precipitation.compareTo(thresholds.getMaxPrecipitation()) > 0 ? 0.6 : 0.1;
-            totalRisk += precipitationRisk;
-            factorCount++;
-        }
-
-        // 4. 湿度风险
-        Integer humidity = weather.getHumidity();
-        if (humidity != null && thresholds.getMaxHumidity() != null) {
-            double humidityRisk = humidity > thresholds.getMaxHumidity() ? 0.5 : 0.1;
-            totalRisk += humidityRisk;
-            factorCount++;
-        }
-
-        // 5. 风切变风险
-        String windShearLevel = weather.getWindShearLevel();
-        double windShearRisk = "high".equals(windShearLevel) ? 0.9 : "medium".equals(windShearLevel) ? 0.5 : 0.1;
-        totalRisk += windShearRisk;
-        factorCount++;
-
-        // 6. 稳定度/湍流风险
-        String stabilityIndex = weather.getStabilityIndex();
-        double turbulenceRisk = "C".equals(stabilityIndex) || "D".equals(stabilityIndex) ? 0.7 : 0.2;
-        totalRisk += turbulenceRisk;
-        factorCount++;
-
-        // 计算平均风险
-        return factorCount > 0 ? totalRisk / factorCount : 0.5;
-    }
-
-    /**
-     * 计算高度因子
-     */
-    private double calculateHeightFactor(int heightIndex, int totalHeights, WeatherRealtime weather) {
-        // 基础：高度越高风险越低
-        double baseFactor = 1.0 - (heightIndex / (double) totalHeights) * 0.4;
-
-        // 根据稳定度调整：不稳定天气下，高度影响更大
-        String stability = weather.getStabilityIndex();
-        if ("C".equals(stability) || "D".equals(stability)) {
-            baseFactor *= 0.8; // 不稳定天气，高空风险增加
-        }
-
-        return Math.max(0.3, Math.min(1.2, baseFactor));
-    }
-
-    /**
-     * 计算时间因子
-     */
-    private double calculateTimeFactor(int timeIndex, int totalTimes, LocalDateTime baseTime) {
-        // 基础时间波动
-        double timeWave = 0.8 + Math.sin(timeIndex * 0.5) * 0.2;
-
-        // 考虑一天中的时间（白天/夜晚）
-        int hour = baseTime.plusMinutes(timeIndex * 30).getHour();
-        double dayNightFactor = (hour >= 6 && hour <= 18) ? 1.0 : 1.1; // 夜晚风险稍高
-
-        return timeWave * dayNightFactor;
-    }
-
-    /**
-     * 计算气象因子
-     */
-    private double calculateWeatherFactor(WeatherRealtime weather, int heightIndex, int timeIndex) {
-        double factor = 0.9 + Math.random() * 0.2; // 基础随机波动
-
-        // 根据风切变等级调整
-        String windShear = weather.getWindShearLevel();
-        if ("high".equals(windShear)) {
-            factor *= 1.3; // 高风切变增加波动
-        }
-
-        // 根据稳定度调整
-        String stability = weather.getStabilityIndex();
-        if ("C".equals(stability) || "D".equals(stability)) {
-            factor *= 1.2; // 不稳定天气增加波动
-        }
-
-        return Math.max(0.7, Math.min(1.5, factor));
-    }
-
-    /**
-     * 计算综合风险值
-     */
-    private int calculateRiskValue(double baseRisk, double heightFactor, double timeFactor,
-            double weatherFactor, boolean forRouteAnalysis) {
-        // 基础计算
-        double risk = baseRisk * heightFactor * timeFactor * weatherFactor;
-
-        // 航路分析模式调整
-        if (forRouteAnalysis) {
-            risk *= 0.8; // 航路分析通常风险较低
-            // 添加空间模式
-            double patternFactor = Math.sin(heightFactor * 0.8 + timeFactor * 0.4) * 0.3 + 0.7;
-            risk *= patternFactor;
-        }
-
-        // 转换为0-100的整数
-        int riskValue = (int) Math.round(risk * 100);
-
-        // 确保在合理范围内
-        return Math.max(10, Math.min(95, riskValue));
-    }
-
-    /**
-     * 生成区域范围的热力图数据
-     */
-    private Map<String, Object> generateAreaHeatmapData(String pointId, String timeRange, String resolution,
-            String bounds, Boolean forRouteAnalysis) {
-
-        // 解析边界框
-        double[] bbox = parseBoundingBox(bounds);
-        if (bbox == null) {
-            return generateMockHeatmapData(pointId, timeRange, resolution, bounds, forRouteAnalysis);
+        if (rawSamples.size() >= CITYWIDE_SYNTHETIC_THRESHOLD) {
+            return rawSamples;
         }
 
         double minLng = bbox[0];
@@ -676,68 +467,417 @@ public class WeatherService {
         double maxLng = bbox[2];
         double maxLat = bbox[3];
 
-        // 获取区域内的气象数据
-        Map<String, Object> weatherData = getAreaWeatherData(bbox);
+        double lngStep = (maxLng - minLng) / Math.max(1d, gridSize - 1d);
+        double latStep = (maxLat - minLat) / Math.max(1d, gridSize - 1d);
+        double spreadLng = Math.max(lngStep * 1.8d, (maxLng - minLng) / 120d);
+        double spreadLat = Math.max(latStep * 1.8d, (maxLat - minLat) / 120d);
 
-        // 获取阈值配置
-        AircraftLimit thresholds = getDefaultAircraftLimits();
+        int syntheticPerSample;
+        if (rawSamples.size() <= 150) {
+            syntheticPerSample = 8;
+        } else if (rawSamples.size() <= 500) {
+            syntheticPerSample = 6;
+        } else {
+            syntheticPerSample = 4;
+        }
 
-        // 根据分辨率确定网格大小
-        int gridSize = getGridSizeFromResolution(resolution);
+        List<IdwSamplePoint> enhanced = new ArrayList<>(rawSamples.size() * (syntheticPerSample + 1));
+        for (IdwSamplePoint sample : rawSamples) {
+            enhanced.add(sample);
+            for (int i = 0; i < syntheticPerSample; i++) {
+                double angle = 2d * Math.PI * (i / (double) syntheticPerSample);
+                double lng = sample.lng + Math.cos(angle) * spreadLng;
+                double lat = sample.lat + Math.sin(angle) * spreadLat;
 
-        // 根据时间范围确定时间点数量
-        int timeCount = getTimeCountFromRange(timeRange);
+                lng = clampValue(lng, minLng, maxLng);
+                lat = clampValue(lat, minLat, maxLat);
 
-        // 生成时间标签
-        List<String> times = generateTimeLabels(timeRange, timeCount);
-
-        // 生成网格坐标和风险数据
-        List<Map<String, Object>> gridData = new ArrayList<>();
-
-        for (int i = 0; i < gridSize; i++) {
-            for (int j = 0; j < gridSize; j++) {
-                // 计算网格点坐标
-                double lng = minLng + (maxLng - minLng) * (i / (double) (gridSize - 1));
-                double lat = minLat + (maxLat - minLat) * (j / (double) (gridSize - 1));
-
-                // 计算该位置的风险值（基于气象数据和空间变化）
-                Map<String, Object> riskData = calculateGridRiskData(lng, lat, weatherData, thresholds, timeCount);
-
-                Map<String, Object> gridPoint = new HashMap<>();
-                gridPoint.put("lng", lng);
-                gridPoint.put("lat", lat);
-                gridPoint.put("x", i);
-                gridPoint.put("y", j);
-                gridPoint.put("riskData", riskData);
-
-                gridData.add(gridPoint);
+                double ringDecay = 0.68d
+                        + 0.18d * (0.5d + 0.5d * Math.sin(sample.lng * 11.3d + sample.lat * 7.7d + i));
+                double value = clampValue(sample.value * ringDecay, 0d, 100d);
+                enhanced.add(new IdwSamplePoint(lng, lat, value));
             }
         }
 
-        // 构建返回结果
-        Map<String, Object> result = new HashMap<>();
-        result.put("bounds", bounds);
-        result.put("gridSize", gridSize);
-        result.put("times", times);
-        result.put("gridData", gridData);
-        result.put("metadata", Map.of(
-                "pointId", pointId,
-                "timeRange", timeRange,
-                "resolution", resolution,
-                "forRouteAnalysis", forRouteAnalysis != null ? forRouteAnalysis : false,
-                "dataType", "area_risk_heatmap",
-                "unit", "风险指数(0-100)",
-                "calculationMethod", "area_weather_based_risk_assessment",
-                "gridType", "regular_grid",
-                "gridCount", gridSize * gridSize,
-                "generatedAt", LocalDateTime.now().toString()));
-
-        return result;
+        return limitSampleCount(enhanced);
     }
 
-    /**
-     * 解析边界框字符串
-     */
+    private Double toDouble(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        try {
+            return Double.parseDouble(String.valueOf(value));
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private double interpolateByIdw(double lng, double lat, List<IdwSamplePoint> samples) {
+        return interpolateByIdw(lng, lat, samples, IDW_NEIGHBOR_LIMIT, IDW_POWER);
+    }
+
+    private double interpolateByIdw(double lng, double lat, List<IdwSamplePoint> samples, int neighborLimit, double power) {
+        if (samples.isEmpty()) {
+            return 0d;
+        }
+
+        PriorityQueue<double[]> nearest = new PriorityQueue<>((a, b) -> Double.compare(b[0], a[0]));
+        for (IdwSamplePoint sample : samples) {
+            double dLng = lng - sample.lng;
+            double dLat = lat - sample.lat;
+            double d2 = dLng * dLng + dLat * dLat;
+
+            if (d2 < 1e-12) {
+                return sample.value;
+            }
+
+            double[] entry = new double[] { d2, sample.value };
+            if (nearest.size() < neighborLimit) {
+                nearest.offer(entry);
+            } else if (d2 < nearest.peek()[0]) {
+                nearest.poll();
+                nearest.offer(entry);
+            }
+        }
+
+        double weightedValue = 0d;
+        double weightSum = 0d;
+        for (double[] neighbor : nearest) {
+            double d = Math.sqrt(neighbor[0]);
+            double weight = 1d / Math.pow(d, power);
+            weightedValue += neighbor[1] * weight;
+            weightSum += weight;
+        }
+
+        if (weightSum <= 0d) {
+            return 0d;
+        }
+        return weightedValue / weightSum;
+    }
+
+    private double interpolateByGaussianKernel(double lng, double lat, List<IdwSamplePoint> samples, double sigma,
+            int neighborLimit) {
+        if (samples.isEmpty()) {
+            return 0d;
+        }
+        if (sigma <= 1e-12) {
+            return interpolateByIdw(lng, lat, samples);
+        }
+
+        PriorityQueue<double[]> nearest = new PriorityQueue<>((a, b) -> Double.compare(b[0], a[0]));
+        for (IdwSamplePoint sample : samples) {
+            double dLng = lng - sample.lng;
+            double dLat = lat - sample.lat;
+            double d2 = dLng * dLng + dLat * dLat;
+            if (d2 < 1e-12) {
+                return sample.value;
+            }
+
+            double[] entry = new double[] { d2, sample.value };
+            if (nearest.size() < neighborLimit) {
+                nearest.offer(entry);
+            } else if (d2 < nearest.peek()[0]) {
+                nearest.poll();
+                nearest.offer(entry);
+            }
+        }
+
+        double sigma2 = sigma * sigma;
+        double weightedValue = 0d;
+        double weightSum = 0d;
+        for (double[] neighbor : nearest) {
+            double weight = Math.exp(-neighbor[0] / (2d * sigma2));
+            weightedValue += neighbor[1] * weight;
+            weightSum += weight;
+        }
+
+        if (weightSum <= 0d) {
+            return 0d;
+        }
+        return weightedValue / weightSum;
+    }
+
+    private double resolveGaussianSigma(double[] bbox, int gridSize) {
+        double minLng = bbox[0];
+        double minLat = bbox[1];
+        double maxLng = bbox[2];
+        double maxLat = bbox[3];
+        double lngStep = (maxLng - minLng) / Math.max(1d, gridSize - 1d);
+        double latStep = (maxLat - minLat) / Math.max(1d, gridSize - 1d);
+        double baseStep = Math.sqrt(lngStep * lngStep + latStep * latStep);
+        return Math.max(baseStep * 3.2d, 1e-5);
+    }
+
+    private double[][] smoothGrid(double[][] source, int passes) {
+        if (source == null || source.length == 0 || source[0].length == 0 || passes <= 0) {
+            return source;
+        }
+
+        int rows = source.length;
+        int cols = source[0].length;
+        double[][] current = source;
+        int[][] kernel = new int[][] {
+                { 1, 2, 1 },
+                { 2, 4, 2 },
+                { 1, 2, 1 }
+        };
+
+        for (int pass = 0; pass < passes; pass++) {
+            double[][] next = new double[rows][cols];
+            for (int y = 0; y < rows; y++) {
+                for (int x = 0; x < cols; x++) {
+                    double weightedSum = 0d;
+                    double dynamicWeight = 0d;
+                    for (int ky = -1; ky <= 1; ky++) {
+                        int py = clampIndex(y + ky, 0, rows - 1);
+                        for (int kx = -1; kx <= 1; kx++) {
+                            int px = clampIndex(x + kx, 0, cols - 1);
+                            int weight = kernel[ky + 1][kx + 1];
+                            weightedSum += current[py][px] * weight;
+                            dynamicWeight += weight;
+                        }
+                    }
+                    next[y][x] = dynamicWeight > 0d ? (weightedSum / dynamicWeight) : current[y][x];
+                }
+            }
+            current = next;
+        }
+
+        return current;
+    }
+
+    private double[][] normalizeByQuantileStretch(double[][] grid, double lowQuantile, double highQuantile) {
+        if (grid == null || grid.length == 0 || grid[0].length == 0) {
+            return grid;
+        }
+
+        int rows = grid.length;
+        int cols = grid[0].length;
+        List<Double> values = new ArrayList<>(rows * cols);
+        for (double[] row : grid) {
+            for (double value : row) {
+                values.add(value);
+            }
+        }
+
+        double low = percentile(values, lowQuantile);
+        double high = percentile(values, highQuantile);
+        double span = high - low;
+
+        double[][] normalized = new double[rows][cols];
+        for (int y = 0; y < rows; y++) {
+            for (int x = 0; x < cols; x++) {
+                double value = grid[y][x];
+                if (span <= 1e-6) {
+                    normalized[y][x] = clampValue(value, 0d, 100d);
+                } else {
+                    double stretched = (value - low) / span * 100d;
+                    normalized[y][x] = clampValue(stretched, 0d, 100d);
+                }
+            }
+        }
+        return normalized;
+    }
+
+    private double percentile(List<Double> values, double quantile) {
+        if (values == null || values.isEmpty()) {
+            return 0d;
+        }
+
+        List<Double> sorted = new ArrayList<>(values);
+        sorted.sort(Double::compareTo);
+
+        double q = clampValue(quantile, 0d, 1d);
+        double index = q * (sorted.size() - 1);
+        int lower = (int) Math.floor(index);
+        int upper = (int) Math.ceil(index);
+        if (lower == upper) {
+            return sorted.get(lower);
+        }
+
+        double fraction = index - lower;
+        return sorted.get(lower) * (1d - fraction) + sorted.get(upper) * fraction;
+    }
+
+    private int clampIndex(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private double clampValue(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private double deterministicNoise(int x, int y) {
+        long n = x * 374761393L + y * 668265263L + 0x9E3779B97F4A7C15L;
+        n = (n ^ (n >> 13)) * 1274126177L;
+        n = n ^ (n >> 16);
+        double unit = (n & 0x7fffffffL) / (double) 0x7fffffffL;
+        return unit * 2d - 1d;
+    }
+
+    private double normalizeRiskTo100(double value) {
+        if (value <= 5d) {
+            return clampValue(value * 20d, 0d, 100d);
+        }
+        return clampValue(value, 0d, 100d);
+    }
+
+    private List<Map<String, Object>> buildCitywideHeatmapFast(List<Map<String, Object>> sourcePoints, double[] bbox) {
+        if (bbox == null || sourcePoints == null || sourcePoints.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        double minLng = bbox[0];
+        double minLat = bbox[1];
+        double maxLng = bbox[2];
+        double maxLat = bbox[3];
+        if (maxLng <= minLng || maxLat <= minLat) {
+            return Collections.emptyList();
+        }
+
+        int gridSize = CITYWIDE_FAST_GRID_SIZE;
+        double[][] valueSum = new double[gridSize][gridSize];
+        int[][] hitCount = new int[gridSize][gridSize];
+
+        for (Map<String, Object> point : sourcePoints) {
+            Object lnglatObj = point.get("lnglat");
+            if (!(lnglatObj instanceof List<?> lnglat) || lnglat.size() < 2) {
+                continue;
+            }
+
+            Double lng = toDouble(lnglat.get(0));
+            Double lat = toDouble(lnglat.get(1));
+            Double value = toDouble(point.get("value"));
+            if (lng == null || lat == null || value == null) {
+                continue;
+            }
+            if (lng < minLng || lng > maxLng || lat < minLat || lat > maxLat) {
+                continue;
+            }
+
+            int gx = clampIndex((int) Math.floor((lng - minLng) / (maxLng - minLng) * (gridSize - 1)), 0, gridSize - 1);
+            int gy = clampIndex((int) Math.floor((lat - minLat) / (maxLat - minLat) * (gridSize - 1)), 0, gridSize - 1);
+
+            valueSum[gy][gx] += normalizeRiskTo100(value);
+            hitCount[gy][gx] += 1;
+        }
+
+        List<Map<String, Object>> points = new ArrayList<>(gridSize * gridSize);
+        for (int gy = 0; gy < gridSize; gy++) {
+            double lat = minLat + (maxLat - minLat) * (gy / (double) (gridSize - 1));
+            for (int gx = 0; gx < gridSize; gx++) {
+                int count = hitCount[gy][gx];
+                if (count <= 0) {
+                    continue;
+                }
+
+                double lng = minLng + (maxLng - minLng) * (gx / (double) (gridSize - 1));
+                double value = valueSum[gy][gx] / count;
+
+                Map<String, Object> outputPoint = new HashMap<>();
+                outputPoint.put("lnglat", Arrays.asList(lng, lat));
+                outputPoint.put("value", clampValue(value, 0d, 100d));
+                outputPoint.put("gridX", gx);
+                outputPoint.put("gridY", gy);
+                outputPoint.put("gridSize", gridSize);
+                outputPoint.put("bboxMinLng", minLng);
+                outputPoint.put("bboxMinLat", minLat);
+                outputPoint.put("bboxMaxLng", maxLng);
+                outputPoint.put("bboxMaxLat", maxLat);
+                points.add(outputPoint);
+            }
+        }
+
+        if (points.size() <= CITYWIDE_FAST_MAX_POINTS) {
+            return points;
+        }
+
+        int step = (int) Math.ceil(points.size() / (double) CITYWIDE_FAST_MAX_POINTS);
+        List<Map<String, Object>> downSampled = new ArrayList<>(CITYWIDE_FAST_MAX_POINTS);
+        for (int i = 0; i < points.size(); i += step) {
+            downSampled.add(points.get(i));
+        }
+        return downSampled;
+    }
+
+    private List<Map<String, Object>> interpolateCitywideHeatmap(List<Map<String, Object>> sourcePoints, double[] bbox) {
+        if (bbox == null || sourcePoints == null || sourcePoints.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<IdwSamplePoint> samples = toIdwSamples(sourcePoints);
+        if (samples.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        int gridSize = resolveCitywideGridSize();
+        List<IdwSamplePoint> enhancedSamples = buildEnhancedCitywideSamples(samples, bbox, gridSize);
+
+        double minLng = bbox[0];
+        double minLat = bbox[1];
+        double maxLng = bbox[2];
+        double maxLat = bbox[3];
+        double gaussianSigma = resolveGaussianSigma(bbox, gridSize);
+
+        double[][] rawGrid = new double[gridSize][gridSize];
+        double[][] gaussianGrid = new double[gridSize][gridSize];
+
+        for (int gy = 0; gy < gridSize; gy++) {
+            double lat = minLat + (maxLat - minLat) * (gy / (double) (gridSize - 1));
+            for (int gx = 0; gx < gridSize; gx++) {
+                double lng = minLng + (maxLng - minLng) * (gx / (double) (gridSize - 1));
+                rawGrid[gy][gx] = interpolateByIdw(lng, lat, samples);
+                gaussianGrid[gy][gx] = interpolateByGaussianKernel(lng, lat, enhancedSamples, gaussianSigma,
+                        CITYWIDE_GAUSSIAN_NEIGHBOR_LIMIT);
+            }
+        }
+
+        double[][] smoothedGrid = smoothGrid(gaussianGrid, 2);
+        List<Double> smoothedValues = new ArrayList<>(gridSize * gridSize);
+        for (double[] row : smoothedGrid) {
+            for (double value : row) {
+                smoothedValues.add(value);
+            }
+        }
+        double noiseAmplitude = Math.max(0.4d, (percentile(smoothedValues, 0.9d) - percentile(smoothedValues, 0.1d)) * 0.06d);
+
+        double[][] blendedGrid = new double[gridSize][gridSize];
+        for (int gy = 0; gy < gridSize; gy++) {
+            for (int gx = 0; gx < gridSize; gx++) {
+                double noise = deterministicNoise(gx, gy) * noiseAmplitude;
+                double blended = rawGrid[gy][gx] * 0.70d + smoothedGrid[gy][gx] * 0.25d + noise;
+                blendedGrid[gy][gx] = clampValue(blended, 0d, 100d);
+            }
+        }
+
+        double[][] normalizedGrid = normalizeByQuantileStretch(blendedGrid, 0.10d, 0.95d);
+
+        List<Map<String, Object>> points = new ArrayList<>(gridSize * gridSize);
+        for (int gy = 0; gy < gridSize; gy++) {
+            double lat = minLat + (maxLat - minLat) * (gy / (double) (gridSize - 1));
+            for (int gx = 0; gx < gridSize; gx++) {
+                double lng = minLng + (maxLng - minLng) * (gx / (double) (gridSize - 1));
+                Map<String, Object> point = new HashMap<>();
+                point.put("lnglat", Arrays.asList(lng, lat));
+                point.put("value", normalizedGrid[gy][gx]);
+                point.put("gridX", gx);
+                point.put("gridY", gy);
+                point.put("gridSize", gridSize);
+                point.put("bboxMinLng", minLng);
+                point.put("bboxMinLat", minLat);
+                point.put("bboxMaxLng", maxLng);
+                point.put("bboxMaxLat", maxLat);
+                points.add(point);
+            }
+        }
+
+        return points;
+    }
+
     private double[] parseBoundingBox(String bounds) {
         try {
             // 移除方括号和空格
@@ -758,116 +898,6 @@ public class WeatherService {
         return null;
     }
 
-    /**
-     * 获取区域内的气象数据（使用真实数据库数据）
-     */
-    private Map<String, Object> getAreaWeatherData(double[] bbox) {
-        // 从数据库获取真实气象数据
-        Map<String, Object> weatherData = new HashMap<>();
-
-        // 查询微尺度气象数据
-        List<MicroscaleWeather> weatherList = microscaleWeatherMapper.selectList(
-                new LambdaQueryWrapper<MicroscaleWeather>()
-                        .orderByDesc(MicroscaleWeather::getDataTime)
-                        .last("LIMIT 100"));
-
-        if (!weatherList.isEmpty()) {
-            // 基于数据库数据计算平均气象数据
-            Map<String, Object> baseWeather = calculateAverageWeather(weatherList);
-            weatherData.put("base", baseWeather);
-            weatherData.put("dataSource", "database");
-        }
-
-        weatherData.put("bbox", bbox);
-        return weatherData;
-    }
-
-    /**
-     * 计算平均气象数据
-     */
-    private Map<String, Object> calculateAverageWeather(List<MicroscaleWeather> weatherList) {
-        double totalWindSpeed = 0;
-        double totalWindShear = 0;
-        double totalTurbulence = 0;
-        int totalRiskLevel = 0;
-
-        for (MicroscaleWeather weather : weatherList) {
-            totalWindSpeed += weather.getWindSpeed() != null ? weather.getWindSpeed().doubleValue() : 0;
-            totalWindShear += weather.getWindShear() != null ? weather.getWindShear().doubleValue() : 0;
-            totalTurbulence += weather.getTurbulence() != null ? weather.getTurbulence().doubleValue() : 0;
-            totalRiskLevel += weather.getRiskLevel();
-        }
-
-        int count = weatherList.size();
-        Map<String, Object> baseWeather = new HashMap<>();
-
-        // 转换为合适的单位
-        baseWeather.put("windSpeed", (totalWindSpeed / count) * 3.6); // 转换为 km/h
-        baseWeather.put("visibility", 10.0 - (totalTurbulence / count) * 2); // 湍流越大，能见度越低
-        baseWeather.put("precipitation", (totalRiskLevel / count) * 0.5); // 风险等级越高，降水可能越大
-        baseWeather.put("humidity", 60 + (int) ((totalWindShear / count) * 20)); // 风切变越大，湿度可能越高
-
-        // 根据数据设置风切变等级
-        double avgWindShear = totalWindShear / count;
-        if (avgWindShear > 0.8) {
-            baseWeather.put("windShearLevel", "high");
-        } else if (avgWindShear > 0.4) {
-            baseWeather.put("windShearLevel", "medium");
-        } else {
-            baseWeather.put("windShearLevel", "low");
-        }
-
-        // 根据数据设置稳定度指数
-        double avgTurbulence = totalTurbulence / count;
-        if (avgTurbulence > 0.6) {
-            baseWeather.put("stabilityIndex", "D");
-        } else if (avgTurbulence > 0.3) {
-            baseWeather.put("stabilityIndex", "C");
-        } else {
-            baseWeather.put("stabilityIndex", "B");
-        }
-
-        return baseWeather;
-    }
-
-    /**
-     * 根据分辨率获取网格大小
-     */
-    private int getGridSizeFromResolution(String resolution) {
-        switch (resolution) {
-            case "low":
-                return 8;
-            case "medium":
-                return 12;
-            case "high":
-                return 16;
-            default:
-                return 12;
-        }
-    }
-
-    /**
-     * 根据时间范围获取时间点数量
-     */
-    private int getTimeCountFromRange(String timeRange) {
-        switch (timeRange) {
-            case "1h":
-                return 7;
-            case "3h":
-                return 7;
-            case "6h":
-                return 13;
-            case "12h":
-                return 25;
-            default:
-                return 7;
-        }
-    }
-
-    /**
-     * 获取天气预测趋势数据（用于折线图）
-     * 调用 Open-Meteo API 获取 15 分钟间隔的天气预测数据
-     */
     public Map<String, Object> getWeatherForecastTrend(String pointId) {
         try {
             // 根据 pointId 获取监测点坐标
@@ -1166,7 +1196,7 @@ public class WeatherService {
             windSpeed.add(forecast.getWindSpeed() != null ? forecast.getWindSpeed().doubleValue() : 0.0);
             visibility.add(forecast.getVisibility() != null ? forecast.getVisibility().intValue() : 0);
             weatherCode.add(forecast.getWeatherCode());
-            weatherText.add(forecast.getWeatherText() != null ? forecast.getWeatherText() : "未知");
+            weatherText.add(forecast.getWeatherText() != null ? forecast.getWeatherText() : "鏈煡");
         }
 
         minutely15.put("time", times);
@@ -1273,481 +1303,27 @@ public class WeatherService {
                 weatherInfo.put("text", "阵雨");
                 break;
             default:
-                weatherInfo.put("text", "未知");
+                weatherInfo.put("text", "鏈煡");
         }
 
         return weatherInfo;
     }
 
-    /**
-     * 生成时间标签
-     */
-    private List<String> generateTimeLabels(String timeRange, int timeCount) {
-        return generateTimeLabels(timeRange, timeCount, LocalDateTime.now());
-    }
-
-    /**
-     * 生成时间标签（带基准时间）
-     */
-    private List<String> generateTimeLabels(String timeRange, int timeCount, LocalDateTime baseTime) {
-        List<String> times = new ArrayList<>();
-
-        int interval = 30; // 默认30分钟间隔
-        if ("1h".equals(timeRange))
-            interval = 10;
-
-        for (int i = 0; i < timeCount; i++) {
-            LocalDateTime time = baseTime.plusMinutes(i * interval);
-            times.add(String.format("%02d:%02d", time.getHour(), time.getMinute()));
-        }
-
-        return times;
-    }
-
-    /**
-     * 计算网格点的风险数据
-     */
-    private Map<String, Object> calculateGridRiskData(double lng, double lat, Map<String, Object> weatherData,
-            AircraftLimit thresholds, int timeCount) {
-        Map<String, Object> baseWeather = (Map<String, Object>) weatherData.get("base");
-
-        // 计算基础风险
-        double baseRisk = calculateBaseRiskFromWeatherData(baseWeather, thresholds);
-
-        // 添加空间变化（基于经纬度）
-        double spatialFactor = calculateSpatialFactor(lng, lat);
-
-        // 生成时间序列风险值
-        List<Integer> timeSeries = new ArrayList<>();
-        for (int t = 0; t < timeCount; t++) {
-            double timeFactor = 0.8 + Math.sin(t * 0.5) * 0.2;
-            double weatherFactor = 0.9 + Math.random() * 0.2;
-
-            double risk = baseRisk * spatialFactor * timeFactor * weatherFactor;
-            int riskValue = (int) Math.round(risk * 100);
-            riskValue = Math.max(20, Math.min(95, riskValue));
-
-            timeSeries.add(riskValue);
-        }
-
-        Map<String, Object> riskData = new HashMap<>();
-        riskData.put("baseRisk", baseRisk);
-        riskData.put("spatialFactor", spatialFactor);
-        riskData.put("timeSeries", timeSeries);
-        riskData.put("currentRisk", timeSeries.get(0)); // 当前时间的风险值
-
-        return riskData;
-    }
-
-    /**
-     * 从气象数据计算基础风险
-     */
-    private double calculateBaseRiskFromWeatherData(Map<String, Object> weatherData, AircraftLimit thresholds) {
-        double totalRisk = 0.0;
-        int factorCount = 0;
-
-        // 风速风险
-        double windSpeed = (double) weatherData.get("windSpeed");
-        if (thresholds.getMaxWindSpeed() != null) {
-            double windSpeedMs = windSpeed * (1000.0 / 3600.0);
-            double windRisk = windSpeedMs > thresholds.getMaxWindSpeed().doubleValue() ? 0.8 : 0.3;
-            totalRisk += windRisk;
-            factorCount++;
-        }
-
-        // 能见度风险
-        double visibility = (double) weatherData.get("visibility");
-        if (thresholds.getMinVisibility() != null) {
-            double visibilityRisk = visibility < thresholds.getMinVisibility().doubleValue() ? 0.7 : 0.2;
-            totalRisk += visibilityRisk;
-            factorCount++;
-        }
-
-        // 其他因素...
-        totalRisk += 0.3; // 其他因素的平均风险
-        factorCount++;
-
-        return factorCount > 0 ? totalRisk / factorCount : 0.5;
-    }
-
-    /**
-     * 计算空间因子（基于经纬度）
-     */
-    private double calculateSpatialFactor(double lng, double lat) {
-        // 模拟空间变化：沿海地区风险较高，内陆风险较低
-        // 这里使用简单的正弦波模拟空间变化
-        double factor = 0.9 + Math.sin(lng * 10) * 0.1 + Math.cos(lat * 10) * 0.1;
-        return Math.max(0.7, Math.min(1.3, factor));
-    }
-
-    /**
-     * 从数据库获取气象数据点
-     */
-    private List<MicroscaleWeather> getWeatherPointsFromDatabase(String pointId, double[] bbox) {
-        // 查询数据库中的微尺度气象数据
-        return microscaleWeatherMapper.selectList(
-                new LambdaQueryWrapper<MicroscaleWeather>()
-                        .eq(MicroscaleWeather::getPointId, pointId)
-                        .or()
-                        .orderByDesc(MicroscaleWeather::getDataTime));
-    }
-
-    /**
-     * 通过插值获取指定位置的气象数据
-     */
-    private Map<String, Object> interpolateWeatherData(double lng, double lat, List<MicroscaleWeather> weatherPoints,
-            double[] bbox) {
-        if (weatherPoints.isEmpty()) {
-            // 如果没有数据，使用默认值
-            Map<String, Object> baseWeather = new HashMap<>();
-            baseWeather.put("windSpeed", 10.0);
-            baseWeather.put("visibility", 10.0);
-            baseWeather.put("precipitation", 0.0);
-            baseWeather.put("humidity", 70);
-            baseWeather.put("windShearLevel", "low");
-            baseWeather.put("stabilityIndex", "B");
-            return baseWeather;
-        }
-
-        // 计算每个数据点的权重（基于距离的反平方）
-        double totalWeight = 0;
-        double weightedWindSpeed = 0;
-        double weightedWindShear = 0;
-        double weightedTurbulence = 0;
-        double weightedRiskLevel = 0;
-
-        for (MicroscaleWeather weather : weatherPoints) {
-            // 为每个数据点分配一个模拟的经纬度位置
-            // 基于pointId和数据索引生成合理的位置
-            double pointLng = getSimulatedLongitude(weather.getPointId(), weatherPoints.indexOf(weather), bbox);
-            double pointLat = getSimulatedLatitude(weather.getPointId(), weatherPoints.indexOf(weather), bbox);
-
-            // 计算距离
-            double distance = Math.sqrt(Math.pow(lng - pointLng, 2) + Math.pow(lat - pointLat, 2));
-
-            // 避免除零错误
-            if (distance < 0.0001) {
-                distance = 0.0001;
-            }
-
-            // 计算权重（距离的反平方）
-            double weight = 1.0 / (distance * distance);
-            totalWeight += weight;
-
-            // 加权累加
-            weightedWindSpeed += (weather.getWindSpeed() != null ? weather.getWindSpeed().doubleValue() : 0) * weight;
-            weightedWindShear += (weather.getWindShear() != null ? weather.getWindShear().doubleValue() : 0) * weight;
-            weightedTurbulence += (weather.getTurbulence() != null ? weather.getTurbulence().doubleValue() : 0)
-                    * weight;
-            weightedRiskLevel += weather.getRiskLevel() * weight;
-        }
-
-        // 计算加权平均值
-        double avgWindSpeed = weightedWindSpeed / totalWeight;
-        double avgWindShear = weightedWindShear / totalWeight;
-        double avgTurbulence = weightedTurbulence / totalWeight;
-        double avgRiskLevel = weightedRiskLevel / totalWeight;
-
-        // 构建气象数据
-        Map<String, Object> baseWeather = new HashMap<>();
-        baseWeather.put("windSpeed", avgWindSpeed * 3.6); // 转换为 km/h
-        baseWeather.put("visibility", 10.0 - (avgTurbulence * 2)); // 湍流越大，能见度越低
-        baseWeather.put("precipitation", avgRiskLevel * 0.5); // 风险等级越高，降水可能越大
-        baseWeather.put("humidity", 60 + (int) (avgWindShear * 20)); // 风切变越大，湿度可能越高
-
-        // 设置风切变等级
-        if (avgWindShear > 0.8) {
-            baseWeather.put("windShearLevel", "high");
-        } else if (avgWindShear > 0.4) {
-            baseWeather.put("windShearLevel", "medium");
-        } else {
-            baseWeather.put("windShearLevel", "low");
-        }
-
-        // 设置稳定度指数
-        if (avgTurbulence > 0.6) {
-            baseWeather.put("stabilityIndex", "D");
-        } else if (avgTurbulence > 0.3) {
-            baseWeather.put("stabilityIndex", "C");
-        } else {
-            baseWeather.put("stabilityIndex", "B");
-        }
-
-        return baseWeather;
-    }
-
-    /**
-     * 为气象数据点生成模拟的经度
-     */
-    private double getSimulatedLongitude(String pointId, int index, double[] bbox) {
-        double minLng = bbox[0];
-        double maxLng = bbox[2];
-        double range = maxLng - minLng;
-
-        // 基于pointId和索引生成不同的位置
-        switch (pointId) {
-            case "point-ninghe-center":
-                return minLng + range * (0.5 + Math.sin(index * 0.7) * 0.3);
-            case "point-ninghe-airport":
-                return minLng + range * (0.7 + Math.cos(index * 0.5) * 0.2);
-            case "point-ninghe-operation":
-                return minLng + range * (0.3 + Math.sin(index * 0.9) * 0.25);
-            default:
-                return minLng + range * (0.1 + index % 9) / 9.0;
-        }
-    }
-
-    /**
-     * 为气象数据点生成模拟的纬度
-     */
-    private double getSimulatedLatitude(String pointId, int index, double[] bbox) {
-        double minLat = bbox[1];
-        double maxLat = bbox[3];
-        double range = maxLat - minLat;
-
-        // 基于pointId和索引生成不同的位置
-        switch (pointId) {
-            case "point-ninghe-center":
-                return minLat + range * (0.5 + Math.cos(index * 0.8) * 0.3);
-            case "point-ninghe-airport":
-                return minLat + range * (0.7 + Math.sin(index * 0.6) * 0.2);
-            case "point-ninghe-operation":
-                return minLat + range * (0.3 + Math.cos(index * 0.7) * 0.25);
-            default:
-                return minLat + range * (0.1 + (index / 3) % 9) / 9.0;
-        }
-    }
-
-    /**
-     * 生成图表热力图数据（时间-高度矩阵）
-     */
-    private Map<String, Object> generateChartHeatmapData(String pointId, String timeRange, String resolution,
-            Boolean forRouteAnalysis) {
-        // 这就是原来的 generateMockHeatmapData 逻辑，用于ECharts图表
-        return generateMockHeatmapData(pointId, timeRange, resolution, null, forRouteAnalysis);
-    }
-
-    /**
-     * 生成地理空间热力图数据（经纬度风险点）
-     */
-    private Map<String, Object> generateGeoHeatmapData(String bounds, String time, String resolution, String pointId) {
-
-        // 解析边界框
-        double[] bbox = parseBoundingBox(bounds);
-
-        double minLng = bbox[0];
-        double minLat = bbox[1];
-        double maxLng = bbox[2];
-        double maxLat = bbox[3];
-
-        // 根据分辨率确定网格大小
-        int gridSize = getGridSizeFromResolution(resolution);
-
-        // 获取阈值配置
-        AircraftLimit thresholds = getDefaultAircraftLimits();
-
-        // 获取数据库中的真实气象数据点
-        List<MicroscaleWeather> weatherPoints = getWeatherPointsFromDatabase(pointId, bbox);
-
-        // 生成网格点数据
-        List<Map<String, Object>> points = new ArrayList<>();
-
-        for (int i = 0; i < gridSize; i++) {
-            for (int j = 0; j < gridSize; j++) {
-                // 计算网格点坐标
-                double lng = minLng + (maxLng - minLng) * (i / (double) (gridSize - 1));
-                double lat = minLat + (maxLat - minLat) * (j / (double) (gridSize - 1));
-
-                // 通过插值获取该点的气象数据
-                Map<String, Object> baseWeather = interpolateWeatherData(lng, lat, weatherPoints, bbox);
-
-                // 计算基础风险
-                double baseRisk = calculateBaseRiskFromWeatherData(baseWeather, thresholds);
-
-                // 添加空间变化
-                double spatialFactor = calculateSpatialFactor(lng, lat);
-
-                // 计算最终风险值 (0-100)
-                int riskValue = (int) Math.round(baseRisk * spatialFactor * 100);
-                riskValue = Math.max(20, Math.min(95, riskValue));
-
-                // 构建点数据
-                Map<String, Object> point = new HashMap<>();
-                point.put("lon", lng);
-                point.put("lat", lat);
-                point.put("value", riskValue);
-                point.put("x", i);
-                point.put("y", j);
-                point.put("riskLevel", getRiskLevel(riskValue));
-
-                points.add(point);
-            }
-        }
-
-        // 构建返回结果
-        Map<String, Object> result = new HashMap<>();
-        result.put("points", points);
-        result.put("bounds", bounds);
-        result.put("gridSize", gridSize);
-        result.put("pointCount", points.size());
-        result.put("metadata", Map.of(
-                "dataType", "geo_heatmap",
-                "unit", "风险指数(0-100)",
-                "calculationMethod", "geo_weather_based_risk",
-                "generatedAt", LocalDateTime.now().toString(),
-                "resolution", resolution));
-
-        return result;
-
-    }
-
-    /**
-     * 获取风险等级
-     */
-    private String getRiskLevel(int riskValue) {
-        if (riskValue >= 80)
-            return "high";
-        if (riskValue >= 60)
-            return "medium";
-        if (riskValue >= 40)
-            return "low";
-        return "very_low";
-    }
-
-    /**
-     * 获取全市范围热力图数据
-     *
-     * @return 热力图数据
-     */
     public Map<String, Object> getCitywideHeatmap() {
-
-        // 获取当前区域的边界
         RegionConfig.Bounds boundsConfig = regionConfig.getBounds();
         String citywideBounds = String.format("[%s,%s,%s,%s]",
                 boundsConfig.getWest(), boundsConfig.getSouth(),
                 boundsConfig.getEast(), boundsConfig.getNorth());
 
-        // 使用通用热力图生成方法，传入null作为pointIds表示区域级查询
-        Map<String, Object> heatmapData = generateCommonHeatmapData(citywideBounds, null);
-
-        // 提取points数据
-        List<Map<String, Object>> points = (List<Map<String, Object>>) heatmapData.get("points");
-
-        // 解析边界框
+        List<Map<String, Object>> sourcePoints = generateCommonHeatmapData(citywideBounds, null, null);
         double[] bbox = parseBoundingBox(citywideBounds);
-        Map<String, Object> bounds = new HashMap<>();
-        if (bbox != null && bbox.length >= 4) {
-            bounds.put("minLon", bbox[0]);
-            bounds.put("minLat", bbox[1]);
-            bounds.put("maxLon", bbox[2]);
-            bounds.put("maxLat", bbox[3]);
-        } else {
-            bounds.put("minLon", 120.0);
-            bounds.put("minLat", 36.0);
-            bounds.put("maxLon", 121.0);
-            bounds.put("maxLat", 37.0);
-        }
+        List<Map<String, Object>> interpolatedPoints = buildCitywideHeatmapFast(sourcePoints, bbox);
 
         Map<String, Object> result = new HashMap<>();
-        result.put("points", points);
-        result.put("bounds", bounds);
-
-        result.put("totalPoints", points != null ? points.size() : 0);
-        result.put("dataType", "citywide_heatmap");
-
-        return result;
-
-    }
-
-    /**
-     * 生成模拟的全市范围热力图数据（降级方案）
-     */
-    private Map<String, Object> generateMockCitywideHeatmapData(Integer totalHours, String resolution,
-            String baseTime) {
-        log.warn("使用模拟热力图数据（降级方案），参数: totalHours={}, resolution={}, baseTime={}",
-                totalHours, resolution, baseTime);
-
-        // 解析基准时间
-        LocalDateTime baseDateTime;
-        if (baseTime != null && !baseTime.isEmpty()) {
-            try {
-                baseDateTime = LocalDateTime.parse(baseTime.replace("Z", ""));
-            } catch (Exception e) {
-                baseDateTime = LocalDateTime.now();
-            }
-        } else {
-            baseDateTime = LocalDateTime.now();
-        }
-
-        // 青岛市边界
-        double minLon = 120.0;
-        double minLat = 36.0;
-        double maxLon = 121.0;
-        double maxLat = 37.0;
-
-        // 根据分辨率确定网格密度
-        int gridSize;
-        if ("low".equals(resolution)) {
-            gridSize = 10;
-        } else if ("high".equals(resolution)) {
-            gridSize = 30;
-        } else {
-            gridSize = 20; // medium
-        }
-
-        // 生成随机风险点
-        List<Map<String, Object>> points = new ArrayList<>();
-        Random random = new Random(baseDateTime.hashCode()); // 使用基准时间作为随机种子，确保相同时间返回相同数据
-
-        for (int i = 0; i < gridSize; i++) {
-            for (int j = 0; j < gridSize; j++) {
-                double lon = minLon + (maxLon - minLon) * (i / (double) (gridSize - 1));
-                double lat = minLat + (maxLat - minLat) * (j / (double) (gridSize - 1));
-
-                // 基于时间生成风险值（模拟随时间变化）
-                // 早上风险较低，下午风险较高
-                int hour = baseDateTime.getHour();
-                double timeFactor = 0.5 + 0.5 * Math.sin(Math.PI * hour / 12.0);
-
-                // 添加一些空间变化（模拟高风险区域）
-                double spatialFactor = 1.0;
-                if (lon > 120.4 && lon < 120.7 && lat > 36.4 && lat < 36.7) {
-                    spatialFactor = 1.8; // 市区风险较高
-                } else if (lon > 120.7 && lat > 36.7) {
-                    spatialFactor = 0.6; // 海边风险较低
-                }
-
-                // 添加随机波动
-                double randomFactor = 0.8 + 0.4 * random.nextDouble();
-
-                // 计算最终风险值 (0-100)
-                int riskValue = (int) Math.round(timeFactor * spatialFactor * randomFactor * 50);
-                riskValue = Math.min(100, Math.max(0, riskValue));
-
-                Map<String, Object> point = new HashMap<>();
-                point.put("lon", lon);
-                point.put("lat", lat);
-                point.put("value", riskValue);
-                points.add(point);
-            }
-        }
-
-        Map<String, Object> bounds = new HashMap<>();
-        bounds.put("minLon", minLon);
-        bounds.put("minLat", minLat);
-        bounds.put("maxLon", maxLon);
-        bounds.put("maxLat", maxLat);
-
-        Map<String, Object> result = new HashMap<>();
-        result.put("points", points);
-        result.put("bounds", bounds);
-        result.put("timestamp", baseDateTime.toString());
-        result.put("resolution", resolution);
-        result.put("totalPoints", points.size());
-        result.put("baseTime", baseDateTime.toString());
-        result.put("isMockData", true); // 标记为模拟数据
-
+        result.put("data", interpolatedPoints);
         return result;
     }
 
 }
+
+

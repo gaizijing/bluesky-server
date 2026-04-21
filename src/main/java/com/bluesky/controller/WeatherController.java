@@ -9,16 +9,18 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * 常规气象数据
- * 
+ * 天气相关接口。
  */
-@Tag(name = "气象数据", description = "实时天气、风向趋势、3D风场、微尺度天气等接口")
+@Tag(name = "天气接口", description = "提供实时天气、热力图和趋势预测数据")
 @RestController
 @RequestMapping("/weather")
 @RequiredArgsConstructor
@@ -29,80 +31,81 @@ public class WeatherController {
     private final RegionConfig regionConfig;
 
     /**
-     * 获取重点关注区域实时气象数据
-     * GET /api/weather/realtime?pointId=point-1
+     * 获取实时天气。
+     * GET /weather/realtime?pointId=point-1
      */
-    @Operation(summary = "获取实时气象数据", description = "获取指定重点关注区域的最新实时气象信息")
+    @Operation(summary = "获取实时天气", description = "根据点位 ID 返回实时天气数据")
     @GetMapping("/realtime")
     public Result<Map<String, Object>> getRealtimeWeather(
-            @Parameter(description = "重点关注区域ID") @RequestParam String pointId) {
+            @Parameter(description = "点位 ID") @RequestParam String pointId) {
         return Result.success(weatherService.getRealtimeWeather(pointId));
     }
 
     /**
-     * 获取地理空间热力图数据（用于Cesium地图）
-     * GET /api/weather/heatmap/geo?pointId=point-1&time=2026-02-28T15:33:00
+     * 获取点位级热力图。
+     * GET /weather/heatmap/geo?pointId=point-1&time=2026-02-28T15:33:00
      */
-    @Operation(summary = "获取地理空间热力图数据（地图）", description = "获取区域风险分布数据，用于Cesium地图热力图展示")
+    @Operation(summary = "获取点位级热力图", description = "读取点位网格数据并返回 Cesium 热力图点集")
     @GetMapping("/heatmap/geo")
     public Result<Map<String, Object>> getWeatherHeatmapGeo(
-            @Parameter(description = "监测点ID") @RequestParam String pointId,
-            @Parameter(description = "时间，ISO格式") @RequestParam(required = false) String time) {
-        
-        // 根据 pointId 查询监测点信息，获取边界框
+            @Parameter(description = "点位 ID") @RequestParam String pointId,
+            @Parameter(description = "时间，ISO 格式，可选") @RequestParam(required = false) String time) {
+
         MonitoringPoint point = monitoringPointService.getById(pointId);
-        
-        // 检查边界框数据是否完整
-        if (point.getBboxMinLng() == null || point.getBboxMinLat() == null || 
-            point.getBboxMaxLng() == null || point.getBboxMaxLat() == null) {
-            throw new IllegalArgumentException("监测点 " + pointId + " 的边界框数据不完整，无法生成热力图");
+        if (point == null) {
+            throw new IllegalArgumentException("未找到点位：" + pointId);
         }
-        
-        // 构建边界框字符串
-        String bounds = String.format("[%s,%s,%s,%s]", 
-            point.getBboxMinLng(), point.getBboxMinLat(),
-            point.getBboxMaxLng(), point.getBboxMaxLat());
-        
+
+        if (point.getBboxMinLng() == null || point.getBboxMinLat() == null
+                || point.getBboxMaxLng() == null || point.getBboxMaxLat() == null) {
+            throw new IllegalArgumentException("点位 " + pointId + " 缺少边界框 bbox 配置，无法生成热力图");
+        }
+
+        String bounds = String.format("[%s,%s,%s,%s]",
+                point.getBboxMinLng(), point.getBboxMinLat(),
+                point.getBboxMaxLng(), point.getBboxMaxLat());
+
         return Result.success(weatherService.getWeatherHeatmapGeo(bounds, time, pointId));
     }
 
-
     /**
-     * 获取全市范围热力图数据
-     * GET /api/weather/heatmap/citywide?totalHours=3&resolution=medium&baseTime=2026-03-09T10:00:00
+     * 获取城市级热力图。
+     * GET /weather/heatmap/citywide
      */
-    @Operation(summary = "获取全市范围热力图数据", description = "获取全市范围内的风险分布热力图数据，支持时间参数")
+    @Operation(summary = "获取城市级连续热力图", description = "聚合全市点位并通过 IDW 插值返回连续热力图")
     @GetMapping("/heatmap/citywide")
     public Result<Map<String, Object>> getCitywideHeatmap() {
         return Result.success(weatherService.getCitywideHeatmap());
     }
 
     /**
-     * 获取地区配置信息
-     * GET /api/weather/region-config
+     * 获取默认区域配置。
+     * GET /weather/region-config
      */
-    @Operation(summary = "获取地区配置信息", description = "获取当前系统配置的地区信息，包括地区名称和边界坐标")
+    @Operation(summary = "获取区域配置", description = "返回默认区域名称和经纬度范围")
     @GetMapping("/region-config")
     public Result<Map<String, Object>> getRegionConfig() {
         Map<String, Object> config = new HashMap<>();
         config.put("defaultName", regionConfig.getDefaultName());
+
         Map<String, Double> bounds = new HashMap<>();
         bounds.put("west", regionConfig.getBounds().getWest());
         bounds.put("east", regionConfig.getBounds().getEast());
         bounds.put("south", regionConfig.getBounds().getSouth());
         bounds.put("north", regionConfig.getBounds().getNorth());
+
         config.put("bounds", bounds);
         return Result.success(config);
     }
 
     /**
-     * 获取天气预测趋势数据
+     * 获取天气趋势预测。
      * GET /weather/forecast-trend?pointId=point-1
      */
-    @Operation(summary = "获取天气预测趋势数据", description = "调用 Open-Meteo API 获取 15 分钟间隔的天气预测数据，包括降水量、风速、能见度")
+    @Operation(summary = "获取天气趋势预测", description = "基于 Open-Meteo 返回未来 15 天趋势预测")
     @GetMapping("/forecast-trend")
     public Result<Map<String, Object>> getWeatherForecastTrend(
-            @Parameter(description = "重点关注区域ID") @RequestParam String pointId) {
+            @Parameter(description = "点位 ID") @RequestParam String pointId) {
         return Result.success(weatherService.getWeatherForecastTrend(pointId));
     }
 }

@@ -41,6 +41,9 @@ public class MicroscaleWeather implements Serializable {
     /** 风险等级(0-3) */
     private Integer riskLevel;
 
+    @TableField("reason")
+    private String reason;
+
     /** 风速 */
     private BigDecimal windSpeed;
 

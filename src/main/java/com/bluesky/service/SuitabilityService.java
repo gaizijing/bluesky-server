@@ -92,10 +92,13 @@ public class SuitabilityService {
             
             timePointMap.computeIfAbsent(timePoint, k -> new HashMap<>());
             
+            // 根据因素名称设置对应的单位
+            String unit = getUnitByFactorName(factorName);
             SuitabilityFactor factor = new SuitabilityFactor(
                 factorName,
                 analysis.getIsSuitable(),
-                analysis.getAbnormalValue().doubleValue()
+                analysis.getAbnormalValue().doubleValue(),
+                unit
             );
             
             timePointMap.get(timePoint).put(factorName, factor);
@@ -276,33 +279,33 @@ public class SuitabilityService {
         // 1. 风速适飞性
         BigDecimal windSpeed = forecast.getWindSpeed();
         boolean windSuitable = windSpeed != null && windSpeed.compareTo(thresholds.getMaxWindSpeed()) <= 0;
-        factors.add(new SuitabilityFactor("风", windSuitable, windSpeed != null ? windSpeed.doubleValue() : 0.0));
+        factors.add(new SuitabilityFactor("风", windSuitable, windSpeed != null ? windSpeed.doubleValue() : 0.0, "m/s"));
         
         // 2. 能见度适飞性
         BigDecimal visibility = forecast.getVisibility();
         boolean visibilitySuitable = visibility != null && 
             visibility.compareTo(thresholds.getMinVisibility()) >= 0;
         factors.add(new SuitabilityFactor("能见度", visibilitySuitable, 
-            visibility != null ? visibility.doubleValue() : 0.0));
+            visibility != null ? visibility.doubleValue() : 0.0, "km"));
         
         // 3. 降水量适飞性
         BigDecimal precipitation = forecast.getPrecipitation();
         boolean precipitationSuitable = precipitation != null && 
             precipitation.compareTo(thresholds.getMaxPrecipitation()) <= 0;
         factors.add(new SuitabilityFactor("降水", precipitationSuitable, 
-            precipitation != null ? precipitation.doubleValue() : 0.0));
+            precipitation != null ? precipitation.doubleValue() : 0.0, "mm"));
         
         // 4. 湿度适飞性（使用默认值，因为预报数据中可能没有）
         boolean humiditySuitable = true; // 默认为适飞
-        factors.add(new SuitabilityFactor("湿度", humiditySuitable, 0.0));
+        factors.add(new SuitabilityFactor("湿度", humiditySuitable, 0.0, "%"));
         
         // 5. 风切变适飞性（使用默认值，因为预报数据中可能没有）
         boolean windShearSuitable = true; // 默认为适飞
-        factors.add(new SuitabilityFactor("风切变", windShearSuitable, 2.0)); // 默认为低等级
+        factors.add(new SuitabilityFactor("风切变", windShearSuitable, 2.0, "等级")); // 默认为低等级
         
         // 6. 湍流/稳定度适飞性（使用默认值，因为预报数据中可能没有）
         boolean turbulenceSuitable = true; // 默认为适飞
-        factors.add(new SuitabilityFactor("湍流", turbulenceSuitable, 0.3)); // 默认为稳定
+        factors.add(new SuitabilityFactor("湍流", turbulenceSuitable, 0.3, "等级")); // 默认为稳定
         
         return factors;
     }
@@ -349,39 +352,39 @@ public class SuitabilityService {
         
         // 1. 风速适飞性
         boolean windSuitable = windSpeedMs.compareTo(thresholds.getMaxWindSpeed()) <= 0;
-        factors.add(new SuitabilityFactor("风", windSuitable, windSpeedMs.doubleValue()));
+        factors.add(new SuitabilityFactor("风", windSuitable, windSpeedMs.doubleValue(), "m/s"));
         
         // 2. 能见度适飞性
         BigDecimal visibility = weather.getVis();
         boolean visibilitySuitable = visibility != null && 
             visibility.compareTo(thresholds.getMinVisibility()) >= 0;
         factors.add(new SuitabilityFactor("能见度", visibilitySuitable, 
-            visibility != null ? visibility.doubleValue() : 0.0));
+            visibility != null ? visibility.doubleValue() : 0.0, "km"));
         
         // 3. 降水量适飞性
         BigDecimal precipitation = weather.getPrecip();
         boolean precipitationSuitable = precipitation != null && 
             precipitation.compareTo(thresholds.getMaxPrecipitation()) <= 0;
         factors.add(new SuitabilityFactor("降水", precipitationSuitable, 
-            precipitation != null ? precipitation.doubleValue() : 0.0));
+            precipitation != null ? precipitation.doubleValue() : 0.0, "mm"));
         
         // 4. 湿度适飞性
         Integer humidity = weather.getHumidity();
         boolean humiditySuitable = humidity != null && humidity <= thresholds.getMaxHumidity();
         factors.add(new SuitabilityFactor("湿度", humiditySuitable, 
-            humidity != null ? humidity.doubleValue() : 0.0));
+            humidity != null ? humidity.doubleValue() : 0.0, "%"));
         
         // 5. 风切变适飞性（根据等级判断）
         String windShearLevel = weather.getWindShearLevel();
         boolean windShearSuitable = !"high".equals(windShearLevel);
         factors.add(new SuitabilityFactor("风切变", windShearSuitable, 
-            getWindShearValue(windShearLevel)));
+            getWindShearValue(windShearLevel), "等级"));
         
         // 6. 湍流/稳定度适飞性
         String stabilityIndex = weather.getStabilityIndex();
         boolean turbulenceSuitable = !"C".equals(stabilityIndex) && !"D".equals(stabilityIndex);
         factors.add(new SuitabilityFactor("湍流", turbulenceSuitable, 
-            getTurbulenceValue(stabilityIndex)));
+            getTurbulenceValue(stabilityIndex), "等级"));
         
         result.setFactors(factors);
         
@@ -449,6 +452,7 @@ public class SuitabilityService {
         List<String> factors = new ArrayList<>();
         List<List<Integer>> statusData = new ArrayList<>();
         List<List<Double>> valueData = new ArrayList<>();
+        List<String> unitData = new ArrayList<>();
         
         // 按因素组织数据
         if (!timeSeries.isEmpty() && !timeSeries.get(0).getFactors().isEmpty()) {
@@ -461,6 +465,7 @@ public class SuitabilityService {
                 }
                 
                 factors.add(factorItem.getName());
+                unitData.add(factorItem.getUnit() != null ? factorItem.getUnit() : "");
                 
                 // 构建该因素的statusData和valueData
                 List<Integer> statusList = new ArrayList<>();
@@ -487,6 +492,7 @@ public class SuitabilityService {
         result.put("factors", factors);
         result.put("statusData", statusData);
         result.put("valueData", valueData);
+        result.put("unitData", unitData);
         
         return result;
     }
@@ -550,6 +556,21 @@ public class SuitabilityService {
             case "C" -> 0.6;      // 中性
             case "D", "E", "F" -> 0.8; // 不稳定，湍流大
             default -> 0.5;
+        };
+    }
+
+    /**
+     * 根据因素名称获取对应的单位
+     */
+    private String getUnitByFactorName(String factorName) {
+        return switch (factorName) {
+            case "风" -> "m/s";
+            case "能见度" -> "km";
+            case "降水" -> "mm";
+            case "湿度" -> "%";
+            case "风切变" -> "等级";
+            case "湍流" -> "等级";
+            default -> "";
         };
     }
 

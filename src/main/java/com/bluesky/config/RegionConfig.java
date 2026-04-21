@@ -1,11 +1,13 @@
 package com.bluesky.config;
 
 import com.bluesky.entity.RegionConfigEntity;
+import com.bluesky.event.RegionConfigEvent;
 import com.bluesky.service.RegionConfigService;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.annotation.PostConstruct;
 import lombok.Data;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationListener;
 import org.springframework.context.annotation.Configuration;
 
 /**
@@ -14,7 +16,7 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 @Data
 @JsonIgnoreProperties(value = {"$$beanFactory", "$$interceptor"}, ignoreUnknown = true)
-public class RegionConfig {
+public class RegionConfig implements ApplicationListener<RegionConfigEvent> {
 
     @Autowired
     private RegionConfigService regionConfigService;
@@ -46,6 +48,21 @@ public class RegionConfig {
         } catch (Exception e) {
             // 如果数据库中没有配置，使用默认值
             System.err.println("数据库中没有默认地区配置，使用默认值");
+        }
+    }
+    
+    /**
+     * 监听地区配置更新事件
+     */
+    @Override
+    public void onApplicationEvent(RegionConfigEvent event) {
+        RegionConfigEntity config = event.getConfig();
+        if (Boolean.TRUE.equals(config.getIsDefault())) {
+            this.defaultName = config.getName();
+            this.bounds.setWest(config.getWest());
+            this.bounds.setEast(config.getEast());
+            this.bounds.setSouth(config.getSouth());
+            this.bounds.setNorth(config.getNorth());
         }
     }
     

@@ -3,9 +3,11 @@ package com.bluesky.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.bluesky.config.RegionConfig;
 import com.bluesky.entity.RegionConfigEntity;
+import com.bluesky.event.RegionConfigEvent;
 import com.bluesky.exception.BusinessException;
 import com.bluesky.mapper.RegionConfigMapper;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -21,6 +23,7 @@ import java.util.List;
 public class RegionConfigService {
 
     private final RegionConfigMapper regionConfigMapper;
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * 获取所有地区配置
@@ -71,6 +74,12 @@ public class RegionConfigService {
         config.setCreatedAt(LocalDateTime.now());
         config.setUpdatedAt(LocalDateTime.now());
         regionConfigMapper.insert(config);
+        
+        // 发布地区配置更新事件
+        if (Boolean.TRUE.equals(config.getIsDefault())) {
+            eventPublisher.publishEvent(new RegionConfigEvent(this, config));
+        }
+        
         return config;
     }
 
@@ -97,6 +106,12 @@ public class RegionConfigService {
 
         config.setUpdatedAt(LocalDateTime.now());
         regionConfigMapper.updateById(config);
+        
+        // 发布地区配置更新事件
+        if (Boolean.TRUE.equals(config.getIsDefault())) {
+            eventPublisher.publishEvent(new RegionConfigEvent(this, config));
+        }
+        
         return config;
     }
 

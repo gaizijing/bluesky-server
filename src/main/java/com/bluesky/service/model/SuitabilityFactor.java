@@ -20,6 +20,9 @@ public class SuitabilityFactor {
     /** 当前值 */
     private double value;
     
+    /** 单位 */
+    private String unit;
+    
     /** 阈值（可选） */
     private Double threshold;
     
@@ -27,5 +30,12 @@ public class SuitabilityFactor {
         this.name = name;
         this.suitable = suitable;
         this.value = value;
+    }
+    
+    public SuitabilityFactor(String name, boolean suitable, double value, String unit) {
+        this.name = name;
+        this.suitable = suitable;
+        this.value = value;
+        this.unit = unit;
     }
 }
