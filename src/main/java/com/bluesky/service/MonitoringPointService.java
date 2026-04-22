@@ -43,16 +43,31 @@ public class MonitoringPointService {
      * 判断监测点是否在配置的地区边界内
      */
     private boolean isPointInConfiguredRegion(MonitoringPoint point) {
-        if (point.getLongitude() == null || point.getLatitude() == null) {
-            return false;
+        RegionConfig.Bounds bounds = regionConfig.getBounds();
+        
+        // 优先使用中心点经纬度判断
+        if (point.getLongitude() != null && point.getLatitude() != null) {
+            double longitude = point.getLongitude().doubleValue();
+            double latitude = point.getLatitude().doubleValue();
+            
+            return longitude >= bounds.getWest() && longitude <= bounds.getEast() &&
+                   latitude >= bounds.getSouth() && latitude <= bounds.getNorth();
         }
         
-        RegionConfig.Bounds bounds = regionConfig.getBounds();
-        double longitude = point.getLongitude().doubleValue();
-        double latitude = point.getLatitude().doubleValue();
+        // 如果没有中心点经纬度，使用边界框判断
+        if (point.getBboxMinLng() != null && point.getBboxMinLat() != null &&
+            point.getBboxMaxLng() != null && point.getBboxMaxLat() != null) {
+            double minLng = point.getBboxMinLng().doubleValue();
+            double minLat = point.getBboxMinLat().doubleValue();
+            double maxLng = point.getBboxMaxLng().doubleValue();
+            double maxLat = point.getBboxMaxLat().doubleValue();
+            
+            // 检查边界框是否与配置地区有重叠
+            return !(maxLng < bounds.getWest() || minLng > bounds.getEast() ||
+                     maxLat < bounds.getSouth() || minLat > bounds.getNorth());
+        }
         
-        return longitude >= bounds.getWest() && longitude <= bounds.getEast() &&
-               latitude >= bounds.getSouth() && latitude <= bounds.getNorth();
+        return false;
     }
 
     /**

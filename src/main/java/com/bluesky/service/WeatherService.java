@@ -1213,55 +1213,65 @@ public class WeatherService {
     /**
      * 保存预报数据到数据库
      */
-    private void saveForecastDataToDatabase(String pointId, Map<String, Object> weatherData) {
-        List<String> timeStrings = (List<String>) weatherData.get("time");
-        List<Double> temperature = (List<Double>) weatherData.get("temperature_2m");
-        List<Double> precipitation = (List<Double>) weatherData.get("precipitation");
-        List<Double> windSpeed = (List<Double>) weatherData.get("wind_speed_10m");
-        List<Integer> visibility = (List<Integer>) weatherData.get("visibility");
-        List<Integer> weatherCode = (List<Integer>) weatherData.get("weather_code");
+   private void saveForecastDataToDatabase(String pointId, Map<String, Object> weatherData) {
+    List<String> timeStrings = (List<String>) weatherData.get("time");
+    List<Double> temperature = (List<Double>) weatherData.get("temperature_2m");
+    List<Double> precipitation = (List<Double>) weatherData.get("precipitation");
+    List<Double> windSpeed = (List<Double>) weatherData.get("wind_speed_10m");
+    List<Integer> visibility = (List<Integer>) weatherData.get("visibility");
+    List<Integer> weatherCode = (List<Integer>) weatherData.get("weather_code");
 
-        if (timeStrings == null || temperature == null || precipitation == null ||
-                windSpeed == null || visibility == null || weatherCode == null) {
-            return;
-        }
-
-        LocalDateTime now = LocalDateTime.now();
-        LocalDate today = now.toLocalDate();
-
-        for (int i = 0; i < timeStrings.size(); i++) {
-            WeatherForecast forecast = new WeatherForecast();
-            forecast.setPointId(pointId);
-
-            // 将时间字符串（HH:mm）转换为LocalDateTime
-            String timeStr = timeStrings.get(i);
-            String[] parts = timeStr.split(":");
-            if (parts.length == 2) {
-                int hour = Integer.parseInt(parts[0]);
-                int minute = Integer.parseInt(parts[1]);
-                LocalDateTime forecastTime = LocalDateTime.of(today, LocalTime.of(hour, minute));
-                forecast.setForecastTime(forecastTime);
-            } else {
-                forecast.setForecastTime(now.plusMinutes(i * 15));
-            }
-
-            forecast.setTemperature(BigDecimal.valueOf(temperature.get(i)));
-            forecast.setPrecipitation(BigDecimal.valueOf(precipitation.get(i)));
-            forecast.setWindSpeed(BigDecimal.valueOf(windSpeed.get(i)));
-            forecast.setVisibility(BigDecimal.valueOf(visibility.get(i)));
-            forecast.setWeatherCode(weatherCode.get(i));
-
-            // 映射天气描述和图标
-            Map<String, String> weatherInfo = getWeatherDescription(weatherCode.get(i));
-            forecast.setWeatherText(weatherInfo.get("text"));
-
-            forecast.setDataSource("open-meteo");
-            forecast.setDataQuality(90);
-            forecast.setCreatedAt(now);
-
-            weatherForecastMapper.insert(forecast);
-        }
+    if (timeStrings == null || temperature == null || precipitation == null ||
+            windSpeed == null || visibility == null || weatherCode == null) {
+        return;
     }
+
+    LocalDateTime now = LocalDateTime.now();
+    LocalDate today = now.toLocalDate();
+    LocalDateTime startOfDay = today.atStartOfDay();
+    LocalDateTime endOfDay = today.atTime(23, 59, 59);
+
+    // 先删除今天的所有预报数据，避免重复
+    weatherForecastMapper.delete(
+            new LambdaQueryWrapper<WeatherForecast>()
+                    .eq(WeatherForecast::getPointId, pointId)
+                    .ge(WeatherForecast::getForecastTime, startOfDay)
+                    .le(WeatherForecast::getForecastTime, endOfDay)
+    );
+
+    for (int i = 0; i < timeStrings.size(); i++) {
+        WeatherForecast forecast = new WeatherForecast();
+        forecast.setPointId(pointId);
+
+        // 将时间字符串（HH:mm）转换为LocalDateTime
+        String timeStr = timeStrings.get(i);
+        String[] parts = timeStr.split(":");
+        if (parts.length == 2) {
+            int hour = Integer.parseInt(parts[0]);
+            int minute = Integer.parseInt(parts[1]);
+            LocalDateTime forecastTime = LocalDateTime.of(today, LocalTime.of(hour, minute));
+            forecast.setForecastTime(forecastTime);
+        } else {
+            forecast.setForecastTime(now.plusMinutes(i * 15));
+        }
+
+        forecast.setTemperature(BigDecimal.valueOf(temperature.get(i)));
+        forecast.setPrecipitation(BigDecimal.valueOf(precipitation.get(i)));
+        forecast.setWindSpeed(BigDecimal.valueOf(windSpeed.get(i)));
+        forecast.setVisibility(BigDecimal.valueOf(visibility.get(i)));
+        forecast.setWeatherCode(weatherCode.get(i));
+
+        // 映射天气描述和图标
+        Map<String, String> weatherInfo = getWeatherDescription(weatherCode.get(i));
+        forecast.setWeatherText(weatherInfo.get("text"));
+
+        forecast.setDataSource("open-meteo");
+        forecast.setDataQuality(90);
+        forecast.setCreatedAt(now);
+
+        weatherForecastMapper.insert(forecast);
+    }
+}
 
     /**
      * 根据 WMO code 获取天气描述和图标
