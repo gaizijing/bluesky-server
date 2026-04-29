@@ -87,6 +87,7 @@ public class WeatherController {
     public Result<Map<String, Object>> getRegionConfig() {
         Map<String, Object> config = new HashMap<>();
         config.put("defaultName", regionConfig.getDefaultName());
+        config.put("modelUrl", regionConfig.getModelUrl());
 
         Map<String, Double> bounds = new HashMap<>();
         bounds.put("west", regionConfig.getBounds().getWest());

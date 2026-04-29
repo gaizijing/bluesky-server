@@ -30,6 +30,11 @@ public class RegionConfig implements ApplicationListener<RegionConfigEvent> {
      * 地区边界
      */
     private Bounds bounds = new Bounds();
+
+    /**
+     * 模型URL
+     */
+    private String modelUrl;
     
     /**
      * 初始化配置，从数据库加载
@@ -44,6 +49,7 @@ public class RegionConfig implements ApplicationListener<RegionConfigEvent> {
                 this.bounds.setEast(defaultConfig.getEast());
                 this.bounds.setSouth(defaultConfig.getSouth());
                 this.bounds.setNorth(defaultConfig.getNorth());
+                this.modelUrl = defaultConfig.getModelUrl();
             }
         } catch (Exception e) {
             // 如果数据库中没有配置，使用默认值
@@ -63,6 +69,7 @@ public class RegionConfig implements ApplicationListener<RegionConfigEvent> {
             this.bounds.setEast(config.getEast());
             this.bounds.setSouth(config.getSouth());
             this.bounds.setNorth(config.getNorth());
+            this.modelUrl = config.getModelUrl();
         }
     }
     

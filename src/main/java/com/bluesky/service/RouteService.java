@@ -1144,7 +1144,7 @@ public class RouteService {
                             .eq(Route::getIsActive, true)
                             .orderByAsc(Route::getCreatedAt)
             );
-
+            //最大存储的历史记录数
             int maxHistoryCount = routeConfig.getMaxHistoryCount() != null ? routeConfig.getMaxHistoryCount() : 5;
 
             if (allRoutes.size() >= maxHistoryCount) {
@@ -1208,6 +1208,7 @@ public class RouteService {
             route.setStartName(startName);
             route.setEndName(endName);
             route.setDistance(metrics.totalDistance);
+            //预计飞行时间
             route.setEstimatedTime(estimateMinutes(metrics.totalDistance));
             route.setStatus("available");
             route.setIsActive(true);

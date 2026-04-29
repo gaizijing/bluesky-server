@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS public.region_config (
     east DOUBLE PRECISION NOT NULL,
     south DOUBLE PRECISION NOT NULL,
     north DOUBLE PRECISION NOT NULL,
+    model_url VARCHAR(500),
     is_default BOOLEAN DEFAULT false,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),

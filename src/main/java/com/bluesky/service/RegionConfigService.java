@@ -144,6 +144,7 @@ public class RegionConfigService {
         bounds.setNorth(entity.getNorth());
 
         config.setBounds(bounds);
+        config.setModelUrl(entity.getModelUrl());
         return config;
     }
 }

@@ -56,6 +56,11 @@ public class RegionConfigEntity implements Serializable {
     private Boolean isDefault;
 
     /**
+     * 模型URL
+     */
+    private String modelUrl;
+
+    /**
      * 创建时间
      */
     private LocalDateTime createdAt;
