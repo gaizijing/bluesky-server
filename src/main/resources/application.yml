@@ -77,12 +77,17 @@ springdoc:
 
 # ISIM 模拟机配置
 isim:
-  host: 127.0.0.1
-  send-port: 8152
+  host: 192.168.0.102
+  send-port: 8154
   receive-port: 8151
   send-interval: 1000
   enabled: true
   websocket-path: /ws/isim-data
+  # 初始位置配置（服务启动时自动发送给ISIM）
+  send-initial-position: true
+  initial-longitude: 117.2
+  initial-latitude: 39.1
+  initial-altitude: 1000
 
 # 航线配置
 route:

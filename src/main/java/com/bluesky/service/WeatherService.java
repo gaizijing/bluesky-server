@@ -13,6 +13,7 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
@@ -98,7 +99,25 @@ public class WeatherService {
 
             // 调用和风天气API
             Map<String, Object> weatherData = callQWeatherAPI(longitude, latitude);
+            if (weatherData == null) {
+                log.warn("和风天气API调用失败，尝试返回数据库中的旧数据");
+                if (latest != null) {
+                    Map<String, Object> result = new HashMap<>();
+                    result.put("updateTime", LocalDateTime.now().toString());
+                    result.put("data", latest);
+                    result.put("warning", "无法获取最新气象数据，当前显示的是历史数据。请检查网络连接后重试。");
+                    result.put("dataSource", "database_cache");
+                    return result;
+                }
 
+                Map<String, Object> errorResult = new HashMap<>();
+                errorResult.put("updateTime", LocalDateTime.now().toString());
+                errorResult.put("error", true);
+                errorResult.put("message", "请检查网络连接");
+                errorResult.put("detail", "无法连接到气象数据服务，可能原因：1.网络连接异常 2.气象服务暂时不可用 3.API配置错误");
+                errorResult.put("suggestion", "请检查您的网络连接，或稍后重试。如果问题持续存在，请联系系统管理员。");
+                return errorResult;
+            }
             // 4. 保存到数据库
             WeatherRealtime newRecord = new WeatherRealtime();
             newRecord.setPointId(pointId);
@@ -131,16 +150,26 @@ public class WeatherService {
             return result;
 
         } catch (Exception e) {
-            // 5. API调用失败，返回数据库中的旧数据
+            log.error("获取实时气象数据异常: {}", e.getMessage(), e);
+
             if (latest != null) {
                 Map<String, Object> result = new HashMap<>();
                 result.put("updateTime", LocalDateTime.now().toString());
                 result.put("data", latest);
+                result.put("warning", "获取最新数据时发生错误，当前显示的是历史数据。请检查网络连接后重试。");
+                result.put("dataSource", "database_cache");
+                result.put("error", e.getMessage());
                 return result;
             }
 
+            Map<String, Object> errorResult = new HashMap<>();
+            errorResult.put("updateTime", LocalDateTime.now().toString());
+            errorResult.put("error", true);
+            errorResult.put("message", "请检查网络连接");
+            errorResult.put("detail", "获取气象数据时发生异常：" + e.getMessage());
+            errorResult.put("suggestion", "请检查您的网络连接，或稍后重试。如果问题持续存在，请联系系统管理员。");
+            return errorResult;
         }
-        return null;
     }
 
     /**
@@ -298,94 +327,113 @@ public class WeatherService {
     // ==================== 瀹搞儱鍙块弬瑙勭《 ====================
 
     /**
-     * 鐠嬪啰鏁ら崪宀勵棑婢垛晜鐨礎PI
+     * 调用和风天气API
      */
     private Map<String, Object> callQWeatherAPI(double longitude, double latitude) {
-        RestTemplate restTemplate = new RestTemplate();
-        try {
-            // 构建和风天气 API 请求
-            String url = String.format(
-                    "https://m73yfr9h37.re.qweatherapi.com/v7/weather/now?location=%f,%f",
-                    longitude, latitude);
+        int maxRetries = 3;
+        int retryCount = 0;
 
-            // 创建请求头
-            HttpHeaders headers = new HttpHeaders();
-            headers.set("X-QW-Api-Key", "7226910f80e3434aa26b1b55938b6f58");
-            headers.set("Accept-Encoding", "gzip");
+        while (retryCount < maxRetries) {
+            try {
+                RestTemplate restTemplate = createRestTemplateWithTimeout();
 
-            // 创建请求实体
-            HttpEntity<String> entity = new HttpEntity<>(headers);
+                String url = String.format(
+                        "https://devapi.qweather.com/v7/weather/now?location=%f,%f",
+                        longitude, latitude);
 
-            // 调用 API 获取原始响应
-            ResponseEntity<byte[]> responseEntity = restTemplate.exchange(url, HttpMethod.GET, entity, byte[].class);
+                HttpHeaders headers = new HttpHeaders();
+                headers.set("X-QW-Api-Key", "7226910f80e3434aa26b1b55938b6f58");
+                headers.set("Accept-Encoding", "gzip");
 
-            if (responseEntity.getStatusCode().is2xxSuccessful()) {
-                byte[] responseBodyBytes = responseEntity.getBody();
-                if (responseBodyBytes != null) {
-                    // 检查是否是Gzip压缩数据
-                    boolean isGzipped = false;
-                    if (responseBodyBytes.length >= 2) {
-                        int magic = ((responseBodyBytes[0] & 0xff) << 8) | (responseBodyBytes[1] & 0xff);
-                        isGzipped = (magic == GZIPInputStream.GZIP_MAGIC);
-                    }
+                HttpEntity<String> entity = new HttpEntity<>(headers);
 
-                    // 解压数据
-                    String responseBody;
-                    // if (isGzipped) {
-                    try (ByteArrayInputStream bais = new ByteArrayInputStream(responseBodyBytes);
-                            GZIPInputStream gis = new GZIPInputStream(bais);
-                            InputStreamReader isr = new InputStreamReader(gis, StandardCharsets.UTF_8);
-                            BufferedReader br = new BufferedReader(isr)) {
-                        StringBuilder sb = new StringBuilder();
-                        String line;
-                        while ((line = br.readLine()) != null) {
-                            sb.append(line);
+                log.info("第{}次尝试调用和风天气API: {}", retryCount + 1, url);
+                ResponseEntity<byte[]> responseEntity = restTemplate.exchange(url, HttpMethod.GET, entity, byte[].class);
+
+                if (responseEntity.getStatusCode().is2xxSuccessful()) {
+                    byte[] responseBodyBytes = responseEntity.getBody();
+                    if (responseBodyBytes != null) {
+                        boolean isGzipped = false;
+                        if (responseBodyBytes.length >= 2) {
+                            int magic = ((responseBodyBytes[0] & 0xff) << 8) | (responseBodyBytes[1] & 0xff);
+                            isGzipped = (magic == GZIPInputStream.GZIP_MAGIC);
                         }
-                        responseBody = sb.toString();
-                    }
-                    // } else {
-                    // responseBody = new String(responseBodyBytes, StandardCharsets.UTF_8);
-                    // }
 
-                    // 解析 JSON 响应
-                    ObjectMapper objectMapper = new ObjectMapper();
-                    ObjectNode jsonResponse = objectMapper.readValue(responseBody, ObjectNode.class);
+                        String responseBody;
+                        try (ByteArrayInputStream bais = new ByteArrayInputStream(responseBodyBytes);
+                             GZIPInputStream gis = new GZIPInputStream(bais);
+                             InputStreamReader isr = new InputStreamReader(gis, StandardCharsets.UTF_8);
+                             BufferedReader br = new BufferedReader(isr)) {
+                            StringBuilder sb = new StringBuilder();
+                            String line;
+                            while ((line = br.readLine()) != null) {
+                                sb.append(line);
+                            }
+                            responseBody = sb.toString();
+                        }
 
-                    // 检查响应状态
-                    String code = jsonResponse.get("code").asText();
-                    if ("200".equals(code)) {
-                        ObjectNode now = (ObjectNode) jsonResponse.get("now");
-                        Map<String, Object> weatherData = new HashMap<>();
+                        ObjectMapper objectMapper = new ObjectMapper();
+                        ObjectNode jsonResponse = objectMapper.readValue(responseBody, ObjectNode.class);
 
-                        // 提取数据
-                        weatherData.put("temp", now.get("temp").asText());
-                        weatherData.put("feelsLike", now.get("feelsLike").asText());
-                        weatherData.put("icon", now.get("icon").asText());
-                        weatherData.put("text", now.get("text").asText());
-                        weatherData.put("wind360", now.get("wind360").asText());
-                        weatherData.put("windDir", now.get("windDir").asText());
-                        weatherData.put("windScale", now.get("windScale").asText());
-                        weatherData.put("windSpeed", now.get("windSpeed").asText());
-                        weatherData.put("humidity", now.get("humidity").asText());
-                        weatherData.put("precip", now.get("precip").asText());
-                        weatherData.put("pressure", now.get("pressure").asText());
-                        weatherData.put("vis", now.get("vis").asText());
-                        weatherData.put("cloud", now.get("cloud").asText());
-                        weatherData.put("dew", now.get("dew").asText());
+                        String code = jsonResponse.get("code").asText();
+                        if ("200".equals(code)) {
+                            ObjectNode now = (ObjectNode) jsonResponse.get("now");
+                            Map<String, Object> weatherData = new HashMap<>();
 
-                        // 添加风切变等级和稳定度指数（模拟数据）
-                        weatherData.put("windShearLevel", "low");
-                        weatherData.put("stabilityIndex", "C");
+                            weatherData.put("temp", now.get("temp").asText());
+                            weatherData.put("feelsLike", now.get("feelsLike").asText());
+                            weatherData.put("icon", now.get("icon").asText());
+                            weatherData.put("text", now.get("text").asText());
+                            weatherData.put("wind360", now.get("wind360").asText());
+                            weatherData.put("windDir", now.get("windDir").asText());
+                            weatherData.put("windScale", now.get("windScale").asText());
+                            weatherData.put("windSpeed", now.get("windSpeed").asText());
+                            weatherData.put("humidity", now.get("humidity").asText());
+                            weatherData.put("precip", now.get("precip").asText());
+                            weatherData.put("pressure", now.get("pressure").asText());
+                            weatherData.put("vis", now.get("vis").asText());
+                            weatherData.put("cloud", now.get("cloud").asText());
+                            weatherData.put("dew", now.get("dew").asText());
 
-                        return weatherData;
+                            weatherData.put("windShearLevel", "low");
+                            weatherData.put("stabilityIndex", "C");
+
+                            log.info("成功获取和风天气数据");
+                            return weatherData;
+                        } else {
+                            log.warn("和风天气API返回错误码: {}", code);
+                        }
                     }
                 }
+            } catch (Exception e) {
+                retryCount++;
+                log.error("第{}次调用和风天气API失败: {}", retryCount, e.getMessage());
+
+                if (retryCount >= maxRetries) {
+                    log.error("已达到最大重试次数({}次)，放弃调用和风天气API", maxRetries);
+                    break;
+                }
+
+                try {
+                    long waitTime = 1000L * retryCount;
+                    log.info("等待{}毫秒后进行第{}次重试...", waitTime, retryCount + 1);
+                    Thread.sleep(waitTime);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    log.error("重试等待被中断");
+                    break;
+                }
             }
-        } catch (Exception e) {
-            log.error("璋冪敤鍜岄澶╂皵 API 澶辫触: {}", e.getMessage(), e);
         }
 
         return null;
+    }
+
+    private RestTemplate createRestTemplateWithTimeout() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(5000);
+        factory.setReadTimeout(10000);
+        return new RestTemplate(factory);
     }
 
     private LocalDateTime parseRequestTime(String time) {

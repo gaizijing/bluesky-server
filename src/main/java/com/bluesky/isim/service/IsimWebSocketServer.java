@@ -1,6 +1,7 @@
 package com.bluesky.isim.service;
 
 import com.bluesky.isim.model.SimData;
+import com.bluesky.service.WindFieldService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.websocket.*;
 import lombok.extern.slf4j.Slf4j;
@@ -22,7 +23,7 @@ public class IsimWebSocketServer {
     
     private static IsimWebSocketService webSocketService;
     private static IsimUdpService isimUdpService;
-    private static WeatherDataService weatherDataService;
+    private static WindFieldService windFieldService;
     private static ObjectMapper objectMapper;
     
     /**
@@ -39,8 +40,8 @@ public class IsimWebSocketServer {
     }
     
     @Autowired
-    public void setWeatherDataService(WeatherDataService service) {
-        weatherDataService = service;
+    public void setWindFieldService(WindFieldService service) {
+        windFieldService = service;
     }
     
     @Autowired
@@ -125,25 +126,24 @@ public class IsimWebSocketServer {
             log.debug("收到飞机位置: lon={}, lat={}, alt={}", longitude, latitude, altitude);
             
             // 获取气象数据并发送给ISIM
-            if (weatherDataService != null && isimUdpService != null) {
-                // 根据飞机位置获取气象数据
-                com.bluesky.isim.model.WeatherData weatherData = 
-                    weatherDataService.getWeatherDataByLocation(
-                        BigDecimal.valueOf(longitude), 
-                        BigDecimal.valueOf(latitude)
-                    );
+            if (windFieldService != null && isimUdpService != null) {
+                // 根据飞机位置获取风场数据（U/V分量）
+                Map<String, Double> windData = windFieldService.getWindAtLocation(longitude, latitude, 10);
                 
-                if (weatherData != null) {
-                    // 发送气象数据给ISIM
-                    isimUdpService.sendWeatherData(weatherData);
-                    
-                    // 回复前端
-                    webSocketService.sendMessage(session, 
-                        "{\"type\":\"weather_data_sent\",\"message\":\"已根据飞机位置发送气象数据\",\"longitude\":" + 
-                        longitude + ",\"latitude\":" + latitude + "}");
-                    
-                    log.debug("已根据飞机位置发送气象数据: lon={}, lat={}", longitude, latitude);
-                }
+                double u = windData.getOrDefault("u", 0.0);
+                double v = windData.getOrDefault("v", 0.0);
+                double w = 0.0;
+                
+                // 发送风场数据给ISIM
+                isimUdpService.sendBodyWind(u, v, w);
+                
+                // 回复前端
+                webSocketService.sendMessage(session, 
+                    "{\"type\":\"weather_data_sent\",\"message\":\"已根据飞机位置发送风场数据\",\"longitude\":" + 
+                    longitude + ",\"latitude\":" + latitude + 
+                    ",\"windU\":" + u + ",\"windV\":" + v + "}");
+                
+                log.debug("已根据飞机位置发送风场数据: lon={}, lat={}, U={}, V={}", longitude, latitude, u, v);
             }
             
         } catch (Exception e) {

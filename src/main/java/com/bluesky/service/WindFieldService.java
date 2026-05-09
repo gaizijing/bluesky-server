@@ -469,6 +469,77 @@ public class WindFieldService {
         return max;
     }
 
+    public Map<String, Double> getWindAtLocation(double longitude, double latitude, int height) {
+        WindSourceFiles sourceFiles = windDataSourceService.ensureSourceFiles();
+        String uFile = sourceFiles.getUFile().toString();
+        String vFile = sourceFiles.getVFile().toString();
+
+        int timeIndex;
+        try {
+            timeIndex = netcdfWindReader.resolveTimeIndex(uFile, null);
+        } catch (Exception e) {
+            throw new BusinessException(ResultCode.SERVICE_UNAVAILABLE, "Failed to resolve latest wind field time: " + e.getMessage());
+        }
+
+        double[] latAxis;
+        double[] lonAxis;
+        double[] levelAxis;
+        try {
+            latAxis = netcdfWindReader.readLatitudeAxis(uFile);
+            lonAxis = netcdfWindReader.readLongitudeAxis(uFile);
+            levelAxis = netcdfWindReader.readLevelAxis(uFile);
+        } catch (Exception e) {
+            throw new BusinessException(ResultCode.SERVICE_UNAVAILABLE, "Failed to read axis from wind file: " + e.getMessage());
+        }
+
+        int levelIndex = 0;
+        if (levelAxis != null && levelAxis.length > 0) {
+            levelIndex = netcdfWindReader.resolveNearestLevelIndex(levelAxis, height);
+        }
+
+        double[][] uGrid;
+        double[][] vGrid;
+        try {
+            uGrid = netcdfWindReader.readUGrid(uFile, timeIndex, levelIndex);
+            vGrid = netcdfWindReader.readVGrid(vFile, timeIndex, levelIndex);
+        } catch (Exception e) {
+            throw new BusinessException(ResultCode.SERVICE_UNAVAILABLE, "Failed to read wind grid: " + e.getMessage());
+        }
+
+        if (uGrid.length == 0 || uGrid[0].length == 0) {
+            throw new BusinessException(ResultCode.SERVICE_UNAVAILABLE, "Wind grid is empty");
+        }
+
+        int latIdx = nearestLatIndex(latAxis, latitude);
+        int lonIdx = nearestLonIndex(lonAxis, normalizeLon360(longitude));
+
+        latIdx = Math.max(0, Math.min(latIdx, uGrid.length - 1));
+        lonIdx = Math.max(0, Math.min(lonIdx, uGrid[0].length - 1));
+
+        double u = uGrid[latIdx][lonIdx];
+        double v = vGrid[latIdx][lonIdx];
+
+        Map<String, Double> result = new HashMap<>();
+        result.put("u", u);
+        result.put("v", v);
+        result.put("speed", Math.hypot(u, v));
+        result.put("direction", calculateWindDirection(u, v));
+
+        return result;
+    }
+
+    private double calculateWindDirection(double u, double v) {
+        if (u == 0 && v == 0) {
+            return 0.0;
+        }
+        double direction = Math.toDegrees(Math.atan2(u, v));
+        direction = 90 - direction;
+        if (direction < 0) {
+            direction += 360;
+        }
+        return direction;
+    }
+
     private static class GridSlice {
         private final double[][] u;
         private final double[][] v;

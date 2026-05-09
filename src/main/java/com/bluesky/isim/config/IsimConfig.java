@@ -19,7 +19,7 @@ public class IsimConfig {
     /**
      * ISIM模拟机UDP接收端口（后端发送气象数据的目标端口）
      */
-    private int sendPort = 8152;
+    private int sendPort = 8154;
     
     /**
      * 后端UDP监听端口（接收ISIM姿态数据）
@@ -40,4 +40,24 @@ public class IsimConfig {
      * WebSocket路径
      */
     private String websocketPath = "/ws/isim-data";
+    
+    /**
+     * 初始经度（服务启动时自动发送给ISIM）
+     */
+    private double initialLongitude = 117.2;
+    
+    /**
+     * 初始纬度（服务启动时自动发送给ISIM）
+     */
+    private double initialLatitude = 39.1;
+    
+    /**
+     * 初始高度（服务启动时自动发送给ISIM，单位：米）
+     */
+    private double initialAltitude = 1000;
+    
+    /**
+     * 是否在启动时自动发送初始位置
+     */
+    private boolean sendInitialPosition = true;
 }
