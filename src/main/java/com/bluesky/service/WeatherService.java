@@ -327,6 +327,93 @@ public class WeatherService {
     // ==================== 瀹搞儱鍙块弬瑙勭《 ====================
 
     /**
+     * 根据经纬度获取实时气象数据
+     * 直接调用和风天气API获取指定坐标的气象信息
+     *
+     * @param longitude 经度
+     * @param latitude  纬度
+     * @return 气象数据Map，包含风速、风向、能见度、温度等信息
+     */
+    public Map<String, Object> getWeatherByCoordinates(double longitude, double latitude) {
+        // 验证经纬度有效性
+        if (longitude < -180 || longitude > 180) {
+            Map<String, Object> errorResult = new HashMap<>();
+            errorResult.put("error", true);
+            errorResult.put("message", "无效的经度值，范围应在 -180 到 180 之间");
+            return errorResult;
+        }
+        if (latitude < -90 || latitude > 90) {
+            Map<String, Object> errorResult = new HashMap<>();
+            errorResult.put("error", true);
+            errorResult.put("message", "无效的纬度值，范围应在 -90 到 90 之间");
+            return errorResult;
+        }
+
+        // 调用和风天气API
+        Map<String, Object> weatherData = callQWeatherAPI(longitude, latitude);
+        if (weatherData == null) {
+            Map<String, Object> errorResult = new HashMap<>();
+            errorResult.put("error", true);
+            errorResult.put("message", "无法获取气象数据，请稍后重试");
+            errorResult.put("detail", "气象服务暂时不可用");
+            return errorResult;
+        }
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("updateTime", LocalDateTime.now().toString());
+        result.put("location", Arrays.asList(longitude, latitude));
+        result.put("data", weatherData);
+        return result;
+    }
+
+    /**
+     * 批量按经纬度获取实时气象（顺序与请求一致）。
+     * 对经度、纬度四舍五入到小数 4 位做去重，相同网格点只调用一次和风接口，降低 QPS。
+     */
+    public Map<String, Object> getWeatherByCoordinatesBatch(List<com.bluesky.dto.WeatherBatchRequest.Coordinate> coordinates) {
+        List<Map<String, Object>> series = new ArrayList<>();
+        // 插入顺序即请求顺序，便于 LRU；key 为 4 位小数网格去重
+        Map<String, Map<String, Object>> cache = new HashMap<>();
+
+        for (com.bluesky.dto.WeatherBatchRequest.Coordinate c : coordinates) {
+            if (c == null || c.getLng() == null || c.getLat() == null) {
+                Map<String, Object> bad = new HashMap<>();
+                bad.put("error", true);
+                bad.put("message", "坐标不能为空");
+                series.add(bad);
+                continue;
+            }
+            double lng = c.getLng();
+            double lat = c.getLat();
+            String key = String.format(java.util.Locale.US, "%.4f,%.4f", lng, lat);
+
+            Map<String, Object> cell = cache.get(key);
+            if (cell == null) {
+                cell = getWeatherByCoordinates(lng, lat);
+                cache.put(key, cell);
+            }
+
+            Map<String, Object> item = new HashMap<>();
+            item.put("lng", lng);
+            item.put("lat", lat);
+            if (Boolean.TRUE.equals(cell.get("error"))) {
+                item.put("error", true);
+                item.put("message", cell.get("message"));
+            } else {
+                item.put("data", cell.get("data"));
+            }
+            series.add(item);
+        }
+
+        Map<String, Object> out = new HashMap<>();
+        out.put("updateTime", LocalDateTime.now().toString());
+        out.put("count", series.size());
+        out.put("uniqueQueries", cache.size());
+        out.put("series", series);
+        return out;
+    }
+
+    /**
      * 调用和风天气API
      */
     private Map<String, Object> callQWeatherAPI(double longitude, double latitude) {
@@ -338,7 +425,7 @@ public class WeatherService {
                 RestTemplate restTemplate = createRestTemplateWithTimeout();
 
                 String url = String.format(
-                        "https://devapi.qweather.com/v7/weather/now?location=%f,%f",
+                    "https://m73yfr9h37.re.qweatherapi.com/v7/weather/now?location=%f,%f",
                         longitude, latitude);
 
                 HttpHeaders headers = new HttpHeaders();
@@ -395,6 +482,12 @@ public class WeatherService {
                             weatherData.put("cloud", now.get("cloud").asText());
                             weatherData.put("dew", now.get("dew").asText());
 
+                            // 计算颠簸指数（基于风速和能见度）
+                            double windSpeedKmH = Double.parseDouble(now.get("windSpeed").asText());
+                            double visKm = Double.parseDouble(now.get("vis").asText());
+                            double turbulenceIndex = calculateTurbulenceIndex(windSpeedKmH, visKm);
+                            weatherData.put("turbulenceIndex", String.format("%.2f", turbulenceIndex));
+
                             weatherData.put("windShearLevel", "low");
                             weatherData.put("stabilityIndex", "C");
 
@@ -427,6 +520,36 @@ public class WeatherService {
         }
 
         return null;
+    }
+
+    /**
+     * 计算颠簸指数（0-1之间）
+     * 基于风速和能见度综合评估
+     * 
+     * @param windSpeedKmH 风速（km/h）
+     * @param visKm 能见度（km）
+     * @return 颠簸指数（0=平稳，1=强烈颠簸）
+     */
+    private double calculateTurbulenceIndex(double windSpeedKmH, double visKm) {
+        // 风速影响因子（风速越大，颠簸可能性越高）
+        // 和风天气返回的风速是 km/h，转换为 m/s 进行计算
+        double windSpeedMs = windSpeedKmH / 3.6;
+        double windFactor = Math.min(1.0, Math.max(0.0, (windSpeedMs - 6) / 10));
+        
+        // 能见度影响因子（能见度越低，颠簸可能性越高）
+        double visFactor = 0.0;
+        if (visKm < 1) {
+            visFactor = 0.8;
+        } else if (visKm < 3) {
+            visFactor = 0.4;
+        } else if (visKm < 5) {
+            visFactor = 0.2;
+        }
+        
+        // 综合颠簸指数
+        double turbulenceIndex = (windFactor * 0.7 + visFactor * 0.3);
+        
+        return Math.round(turbulenceIndex * 100.0) / 100.0;
     }
 
     private RestTemplate createRestTemplateWithTimeout() {
