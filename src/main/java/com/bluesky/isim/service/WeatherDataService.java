@@ -1,7 +1,6 @@
 package com.bluesky.isim.service;
 
 import com.bluesky.entity.LandingPoint;
-import com.bluesky.entity.WeatherRealtime;
 import com.bluesky.isim.model.WeatherData;
 import com.bluesky.service.LandingPointService;
 import com.bluesky.service.WeatherService;
@@ -24,29 +23,20 @@ public class WeatherDataService {
 
     public WeatherData getWeatherDataByPointId(String pointId) {
         try {
-            Map<String, Object> weatherResult = weatherService.getRealtimeWeather(pointId);
-            if (weatherResult == null || !weatherResult.containsKey("data")) {
+            Map<String, Object> snapshot = weatherService.buildFlyabilityWeatherMap(pointId);
+            if (snapshot.isEmpty()) {
                 log.warn("未找到起降点 {} 的气象数据", pointId);
                 return createDefaultWeatherData(pointId);
             }
 
-            WeatherRealtime weatherRealtime = (WeatherRealtime) weatherResult.get("data");
-            if (weatherRealtime == null) {
-                return createDefaultWeatherData(pointId);
-            }
-
             LandingPoint point = landingPointService.getEntity(pointId);
-
             WeatherData weatherData = new WeatherData();
-            weatherData.setWindDirection(BigDecimal.valueOf(weatherRealtime.getWind360()));
-            weatherData.setWindSpeed(weatherRealtime.getWindSpeed());
-            weatherData.setTemperature(weatherRealtime.getTemp());
-            weatherData.setHumidity(BigDecimal.valueOf(weatherRealtime.getHumidity()));
-            weatherData.setPressure(weatherRealtime.getPressure());
-            weatherData.setVisibility(weatherRealtime.getVis());
-            weatherData.setCloudCover(BigDecimal.valueOf(weatherRealtime.getCloud()));
-            weatherData.setPrecipitation(weatherRealtime.getPrecip());
-            weatherData.setTimestamp(weatherRealtime.getObsTime());
+            weatherData.setWindSpeed(BigDecimal.valueOf(doubleVal(snapshot.get("windSpeed"))));
+            weatherData.setTemperature(BigDecimal.valueOf(doubleVal(snapshot.get("temperature"))));
+            weatherData.setHumidity(BigDecimal.valueOf(doubleVal(snapshot.get("humidity"))));
+            weatherData.setVisibility(BigDecimal.valueOf(doubleVal(snapshot.get("visibility"))));
+            weatherData.setPrecipitation(BigDecimal.valueOf(doubleVal(snapshot.get("precipitation"))));
+            weatherData.setTimestamp(LocalDateTime.now());
             weatherData.setPointId(pointId);
 
             if (point != null) {
@@ -54,26 +44,21 @@ public class WeatherDataService {
                 weatherData.setLatitude(point.getLatitude());
                 weatherData.setAltitude(point.getAltitude());
             }
-
-            try {
-                if (weatherRealtime.getWindShearLevel() != null) {
-                    BigDecimal windShearValue = convertWindShearLevel(weatherRealtime.getWindShearLevel());
-                    weatherData.setWindShear(windShearValue);
-                }
-
-                if (weatherRealtime.getStabilityIndex() != null) {
-                    BigDecimal turbulenceValue = convertStabilityIndex(weatherRealtime.getStabilityIndex());
-                    weatherData.setTurbulenceIntensity(turbulenceValue);
-                }
-            } catch (Exception e) {
-                log.debug("无法获取湍流或风切变数据", e);
-            }
-
             return weatherData;
 
         } catch (Exception e) {
             log.error("获取起降点 {} 气象数据失败", pointId, e);
             return createDefaultWeatherData(pointId);
+        }
+    }
+
+    private double doubleVal(Object value) {
+        if (value == null) return 0d;
+        if (value instanceof Number n) return n.doubleValue();
+        try {
+            return Double.parseDouble(String.valueOf(value));
+        } catch (Exception e) {
+            return 0d;
         }
     }
 

@@ -6,6 +6,8 @@ import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 
 public final class TimeBucketUtil {
 
@@ -20,7 +22,7 @@ public final class TimeBucketUtil {
     }
 
     public static OffsetDateTime parseOrNow(String time) {
-        if (time == null || time.isBlank()) {
+        if (time == null || time.isBlank() || "now".equalsIgnoreCase(time.trim())) {
             return now();
         }
         String normalized = time.trim().replace(' ', '+');
@@ -48,5 +50,24 @@ public final class TimeBucketUtil {
 
     public static OffsetDateTime plusBuckets(OffsetDateTime bucket, int buckets) {
         return bucket.plus((long) buckets * BUCKET_MINUTES, ChronoUnit.MINUTES);
+    }
+
+    public static LocalDateTime toBucketLocal(OffsetDateTime time) {
+        return toBucket(time).atZoneSameInstant(ZONE).toLocalDateTime();
+    }
+
+    public static LocalDateTime currentBucketLocal() {
+        return toBucketLocal(now());
+    }
+
+    /** 含端点的 15min 桶序列（from/to 均会 floor 到桶边界） */
+    public static List<LocalDateTime> bucketsBetween(LocalDateTime from, LocalDateTime to) {
+        LocalDateTime start = toBucketLocal(from.atZone(ZONE).toOffsetDateTime());
+        LocalDateTime end = toBucketLocal(to.atZone(ZONE).toOffsetDateTime());
+        List<LocalDateTime> buckets = new ArrayList<>();
+        for (LocalDateTime cur = start; !cur.isAfter(end); cur = cur.plusMinutes(BUCKET_MINUTES)) {
+            buckets.add(cur);
+        }
+        return buckets;
     }
 }

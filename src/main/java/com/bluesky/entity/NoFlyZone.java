@@ -12,30 +12,21 @@ import java.io.Serializable;
 import java.time.LocalDateTime;
 
 @Data
-@TableName(value = "region", autoResultMap = true)
-public class Region implements Serializable {
+@TableName(value = "no_fly_zone", autoResultMap = true)
+public class NoFlyZone implements Serializable {
 
-    @TableId(value = "region_id", type = IdType.INPUT)
+    @TableId(value = "zone_id", type = IdType.INPUT)
+    private String zoneId;
     private String regionId;
-
     private String name;
-    private Double centerLng;
-    private Double centerLat;
-    private Double west;
-    private Double east;
-    private Double south;
-    private Double north;
+    private String zoneType;
     @TableField(typeHandler = JsonbStringTypeHandler.class)
-    private String mapLiftJson;
-    private String modelUrl;
+    private String geometryJson;
+    private LocalDateTime effectiveFrom;
+    private LocalDateTime effectiveTo;
     private Boolean enabled;
-    private Boolean isDefault;
-
     @TableLogic
     private Integer deleted;
-
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
-    private String createdBy;
-    private String updatedBy;
 }

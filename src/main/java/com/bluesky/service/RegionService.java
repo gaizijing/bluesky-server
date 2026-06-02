@@ -62,6 +62,13 @@ public class RegionService {
         return requireRegion(regionId);
     }
 
+    /** P2 调度：仅处理已启用且未删除的 Region */
+    public List<Region> listEnabled() {
+        return regionMapper.selectList(new LambdaQueryWrapper<Region>()
+                .eq(Region::getDeleted, 0)
+                .eq(Region::getEnabled, true));
+    }
+
     @Transactional
     public RegionVO create(RegionRequest request) {
         Region region = new Region();

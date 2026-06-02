@@ -3,8 +3,6 @@ package com.bluesky;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.scheduling.annotation.EnableScheduling;
-
 /**
  * 低空气象飞行保障服务系统 - 主启动类
  *
@@ -13,7 +11,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  */
 @SpringBootApplication
 @MapperScan("com.bluesky.mapper")
-@EnableScheduling
 public class BlueSkyApplication {
 
     public static void main(String[] args) {

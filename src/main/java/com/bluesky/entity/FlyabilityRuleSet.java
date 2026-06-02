@@ -11,20 +11,19 @@ import java.io.Serializable;
 import java.time.LocalDateTime;
 
 @Data
-@TableName(value = "route_version", autoResultMap = true)
-public class RouteVersion implements Serializable {
+@TableName(value = "flyability_rule_set", autoResultMap = true)
+public class FlyabilityRuleSet implements Serializable {
 
-    @TableId(value = "route_version_id", type = IdType.INPUT)
-    private String routeVersionId;
-
-    private String routeId;
+    @TableId(value = "rule_set_id", type = IdType.INPUT)
+    private String ruleSetId;
+    private String name;
     private Integer versionNo;
-    private Double cruiseHeightM;
-    @TableField(typeHandler = JsonbStringTypeHandler.class)
-    private String geometryJson;
-    private Integer waypointCount;
-    private Double distanceM;
     private String status;
+    private LocalDateTime effectiveFrom;
+    private LocalDateTime effectiveTo;
+    @TableField(typeHandler = JsonbStringTypeHandler.class)
+    private String rulesJson;
     private LocalDateTime createdAt;
+    private LocalDateTime updatedAt;
     private String createdBy;
 }

@@ -72,12 +72,7 @@ public class WeatherService {
      * 先查数据库，如果没有则调用和风天气API
      */
     public Map<String, Object> getRealtimeWeather(String pointId) {
-        // 1. 先查数据库 指定id的最新的实时数据1条
-        WeatherRealtime latest = weatherRealtimeMapper.selectOne(
-                new LambdaQueryWrapper<WeatherRealtime>()
-                        .eq(WeatherRealtime::getPointId, pointId)
-                        .orderByDesc(WeatherRealtime::getObsTime)
-                        .last("LIMIT 1"));
+        WeatherRealtime latest = safeSelectLatestRealtime(pointId);
 
         // 2. 如果数据库有数据且是最近1小时内的，直接返回
         if (latest != null && latest.getObsTime() != null) {
@@ -142,7 +137,11 @@ public class WeatherService {
             newRecord.setDataQuality(85);
             newRecord.setCreatedAt(LocalDateTime.now());
 
-            weatherRealtimeMapper.insert(newRecord);
+            try {
+                weatherRealtimeMapper.insert(newRecord);
+            } catch (Exception persistEx) {
+                log.warn("weather_realtime 不可用，跳过持久化: {}", persistEx.getMessage());
+            }
 
             Map<String, Object> result = new HashMap<>();
             result.put("updateTime", LocalDateTime.now().toString());
@@ -169,6 +168,97 @@ public class WeatherService {
             errorResult.put("detail", "获取气象数据时发生异常：" + e.getMessage());
             errorResult.put("suggestion", "请检查您的网络连接，或稍后重试。如果问题持续存在，请联系系统管理员。");
             return errorResult;
+        }
+    }
+
+    /**
+     * 适飞计算用气象因子（V2 无 weather_realtime 时走和风坐标查询）
+     */
+    public Map<String, Object> buildFlyabilityWeatherMap(String pointId) {
+        LandingPoint point = landingPointService.getEntity(pointId);
+        return buildFlyabilityWeatherMap(
+                point.getLongitude().doubleValue(), point.getLatitude().doubleValue());
+    }
+
+    public Map<String, Object> buildFlyabilityWeatherMap(double lng, double lat) {
+        return toFlyabilityFactorMap(getWeatherByCoordinates(lng, lat));
+    }
+
+    /** V2：和风坐标结果 → 统一气象点字段（m/s、km 等） */
+    public Map<String, Object> flattenCoordinatesWeather(Map<String, Object> apiResult) {
+        if (apiResult == null || Boolean.TRUE.equals(apiResult.get("error"))) {
+            return Map.of();
+        }
+        return toFlyabilityFactorMap(apiResult);
+    }
+
+    private WeatherRealtime safeSelectLatestRealtime(String pointId) {
+        try {
+            return weatherRealtimeMapper.selectOne(
+                    new LambdaQueryWrapper<WeatherRealtime>()
+                            .eq(WeatherRealtime::getPointId, pointId)
+                            .orderByDesc(WeatherRealtime::getObsTime)
+                            .last("LIMIT 1"));
+        } catch (Exception ex) {
+            log.warn("weather_realtime 表不可用，改走实时 API: {}", ex.getMessage());
+            return null;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> extractWeatherDataMap(Object dataObj) {
+        if (dataObj instanceof Map<?, ?> map) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            map.forEach((k, v) -> out.put(String.valueOf(k), v));
+            return out;
+        }
+        if (dataObj instanceof WeatherRealtime wr) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            if (wr.getTemp() != null) out.put("temp", wr.getTemp().toString());
+            if (wr.getFeelsLike() != null) out.put("feelsLike", wr.getFeelsLike().toString());
+            if (wr.getIcon() != null) out.put("icon", wr.getIcon().toString());
+            if (wr.getText() != null) out.put("text", wr.getText());
+            if (wr.getWind360() != null) out.put("wind360", wr.getWind360().toString());
+            if (wr.getWindDir() != null) out.put("windDir", wr.getWindDir());
+            if (wr.getWindScale() != null) out.put("windScale", wr.getWindScale());
+            if (wr.getWindSpeed() != null) out.put("windSpeed", wr.getWindSpeed().toString());
+            if (wr.getHumidity() != null) out.put("humidity", wr.getHumidity().toString());
+            if (wr.getPrecip() != null) out.put("precip", wr.getPrecip().toString());
+            if (wr.getPressure() != null) out.put("pressure", wr.getPressure().toString());
+            if (wr.getVis() != null) out.put("vis", wr.getVis().toString());
+            if (wr.getCloud() != null) out.put("cloud", wr.getCloud().toString());
+            if (wr.getDew() != null) out.put("dew", wr.getDew().toString());
+            if (wr.getWindShearLevel() != null) out.put("windShearLevel", wr.getWindShearLevel());
+            if (wr.getStabilityIndex() != null) out.put("stabilityIndex", wr.getStabilityIndex());
+            return out;
+        }
+        return Map.of();
+    }
+
+    private Map<String, Object> toFlyabilityFactorMap(Map<String, Object> apiResult) {
+        Map<String, Object> flat = new LinkedHashMap<>();
+        if (apiResult == null || Boolean.TRUE.equals(apiResult.get("error"))) {
+            return flat;
+        }
+        Map<String, Object> d = extractWeatherDataMap(apiResult.get("data"));
+        double windKmh = parseDouble(d.get("windSpeed"));
+        flat.put("windSpeed", windKmh > 0 ? windKmh / 3.6 : 0d);
+        flat.put("windDirection", d.get("windDir"));
+        flat.put("visibility", parseDouble(d.get("vis")));
+        flat.put("precipitation", parseDouble(d.get("precip")));
+        flat.put("temperature", parseDouble(d.get("temp")));
+        flat.put("humidity", parseDouble(d.get("humidity")));
+        flat.put("cloudBase", 500d);
+        return flat;
+    }
+
+    private double parseDouble(Object value) {
+        if (value == null) return 0d;
+        if (value instanceof Number n) return n.doubleValue();
+        try {
+            return Double.parseDouble(String.valueOf(value));
+        } catch (Exception e) {
+            return 0d;
         }
     }
 
@@ -1087,12 +1177,17 @@ public class WeatherService {
             LocalDateTime startOfDay = today.atStartOfDay();
             LocalDateTime endOfDay = today.atTime(23, 59, 59);
 
-            List<WeatherForecast> todayForecasts = weatherForecastMapper.selectList(
-                    new LambdaQueryWrapper<WeatherForecast>()
-                            .eq(WeatherForecast::getPointId, pointId)
-                            .ge(WeatherForecast::getForecastTime, startOfDay)
-                            .le(WeatherForecast::getForecastTime, endOfDay)
-                            .orderByAsc(WeatherForecast::getForecastTime));
+            List<WeatherForecast> todayForecasts = List.of();
+            try {
+                todayForecasts = weatherForecastMapper.selectList(
+                        new LambdaQueryWrapper<WeatherForecast>()
+                                .eq(WeatherForecast::getPointId, pointId)
+                                .ge(WeatherForecast::getForecastTime, startOfDay)
+                                .le(WeatherForecast::getForecastTime, endOfDay)
+                                .orderByAsc(WeatherForecast::getForecastTime));
+            } catch (Exception dbEx) {
+                log.warn("weather_forecast 表不可用，改走 Open-Meteo: {}", dbEx.getMessage());
+            }
 
             Map<String, Object> weatherData;
 
@@ -1113,8 +1208,11 @@ public class WeatherService {
                 // 调用 API
                 weatherData = callOpenMeteoAPI(url + params);
 
-                // 4. 保存到数据库
-                saveForecastDataToDatabase(pointId, weatherData);
+                try {
+                    saveForecastDataToDatabase(pointId, weatherData);
+                } catch (Exception persistEx) {
+                    log.warn("weather_forecast 持久化跳过: {}", persistEx.getMessage());
+                }
             }
 
             // 5. 过滤数据，只返回从当前时间开始的3小时，每30分钟一个数据点
@@ -1128,7 +1226,18 @@ public class WeatherService {
 
         } catch (Exception e) {
             log.error("获取天气预测趋势失败", e);
-            return null;
+            Map<String, Object> empty = new LinkedHashMap<>();
+            empty.put("time", List.of());
+            empty.put("temperature_2m", List.of());
+            empty.put("precipitation", List.of());
+            empty.put("visibility", List.of());
+            empty.put("wind_speed_10m", List.of());
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("updateTime", LocalDateTime.now().toString());
+            result.put("pointId", pointId);
+            result.put("data", empty);
+            result.put("error", e.getMessage());
+            return result;
         }
     }
 

@@ -187,3 +187,29 @@ logging:
   charset:
     console: UTF-8
     file: UTF-8
+
+llm:
+  provider: openai
+  timeout-ms: 3000
+  max-retries: 0
+
+# P2 调度与格点/适飞/风险缓存
+scheduler:
+  enabled: true
+  grid-cron: "0 2,17,32,47 * * * *"
+  grid-rows: 4
+  grid-cols: 4
+  grid-sample-interval-ms: 1500
+  heights:
+    - 100
+  products:
+    - temperature
+    - wind
+    - visibility
+    - precip
+  cleanup-cron: "0 0 2 * * *"
+  cache-retention-days: 7
+  warning-retention-days: 180
+  ai-conclusion-retention-days: 30
+  cleanup-batch-size: 10000
+  recompute-buckets: 4
