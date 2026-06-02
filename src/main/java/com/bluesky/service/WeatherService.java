@@ -1,7 +1,7 @@
 package com.bluesky.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.bluesky.config.RegionConfig;
+import com.bluesky.entity.LandingPoint;
 import com.bluesky.entity.*;
 import com.bluesky.mapper.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -43,8 +43,8 @@ public class WeatherService {
     private final MicroscaleWeatherMapper microscaleWeatherMapper;
     private final WeatherForecastMapper weatherForecastMapper;
     private final AircraftLimitMapper aircraftLimitMapper;
-    private final MonitoringPointService monitoringPointService;
-    private final RegionConfig regionConfig;
+    private final LandingPointService landingPointService;
+    private final RegionService regionService;
     private static final int CITYWIDE_MAX_SOURCE_POINTS = 15000;
     private static final int IDW_NEIGHBOR_LIMIT = 20;
     private static final double IDW_POWER = 2.0d;
@@ -93,7 +93,7 @@ public class WeatherService {
         // 3. 数据库没有或数据过期，调用和风天气API
         try {
             // 根据pointId从monitoring_points表查询坐标
-            MonitoringPoint point = monitoringPointService.getById(pointId);
+            LandingPoint point = landingPointService.getEntity(pointId);
             double longitude = point.getLongitude().doubleValue();
             double latitude = point.getLatitude().doubleValue();
 
@@ -206,29 +206,29 @@ public class WeatherService {
             return Collections.emptyList();
         }
 
-        List<MonitoringPoint> monitorPoints = new ArrayList<>();
+        List<LandingPoint> monitorPoints = new ArrayList<>();
         if (pointIds != null && !pointIds.isEmpty()) {
             for (String pointId : pointIds) {
                 if (pointId == null || pointId.isEmpty()) {
                     continue;
                 }
-                MonitoringPoint point = monitoringPointService.getById(pointId);
+                LandingPoint point = landingPointService.getEntity(pointId);
                 if (point != null) {
                     monitorPoints.add(point);
                 }
             }
         } else {
-            monitorPoints.addAll(monitoringPointService.getAll());
+            monitorPoints.addAll(landingPointService.listAllEntities());
         }
 
         List<Map<String, Object>> points = new ArrayList<>();
-        for (MonitoringPoint point : monitorPoints) {
+        for (LandingPoint point : monitorPoints) {
             points.addAll(buildHeatmapPointsForMonitor(point, targetTime));
         }
         return points;
     }
 
-    private List<Map<String, Object>> buildHeatmapPointsForMonitor(MonitoringPoint monitor, LocalDateTime targetTime) {
+    private List<Map<String, Object>> buildHeatmapPointsForMonitor(LandingPoint monitor, LocalDateTime targetTime) {
         if (monitor == null || monitor.getBboxMinLng() == null || monitor.getBboxMinLat() == null
                 || monitor.getBboxMaxLng() == null || monitor.getBboxMaxLat() == null) {
             return Collections.emptyList();
@@ -239,7 +239,7 @@ public class WeatherService {
         double pointMaxLng = monitor.getBboxMaxLng().doubleValue();
         double pointMaxLat = monitor.getBboxMaxLat().doubleValue();
 
-        List<MicroscaleWeather> weatherList = getWeatherPointsFromDatabase(monitor.getId(), targetTime);
+        List<MicroscaleWeather> weatherList = getWeatherPointsFromDatabase(monitor.getLandingPointId(), targetTime);
         List<Map<String, Object>> points = new ArrayList<>(weatherList.size());
 
         for (MicroscaleWeather weather : weatherList) {
@@ -1072,7 +1072,7 @@ public class WeatherService {
     public Map<String, Object> getWeatherForecastTrend(String pointId) {
         try {
             // 根据 pointId 获取监测点坐标
-            MonitoringPoint point = monitoringPointService.getById(pointId);
+            LandingPoint point = landingPointService.getEntity(pointId);
             if (point == null) {
                 throw new IllegalArgumentException("监测点不存在: " + pointId);
             }
@@ -1491,10 +1491,10 @@ public class WeatherService {
     }
 
     public Map<String, Object> getCitywideHeatmap() {
-        RegionConfig.Bounds boundsConfig = regionConfig.getBounds();
+        Region region = regionService.getEntity(regionService.getDefault().getRegionId());
         String citywideBounds = String.format("[%s,%s,%s,%s]",
-                boundsConfig.getWest(), boundsConfig.getSouth(),
-                boundsConfig.getEast(), boundsConfig.getNorth());
+                region.getWest(), region.getSouth(),
+                region.getEast(), region.getNorth());
 
         List<Map<String, Object>> sourcePoints = generateCommonHeatmapData(citywideBounds, null, null);
         double[] bbox = parseBoundingBox(citywideBounds);

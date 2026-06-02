@@ -2,15 +2,14 @@ package com.bluesky.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.bluesky.common.ResultCode;
-import com.bluesky.config.RouteConfig;
+import com.bluesky.entity.LandingPoint;
 import com.bluesky.entity.MicroscaleWeather;
-import com.bluesky.entity.MonitoringPoint;
 import com.bluesky.entity.Route;
 import com.bluesky.entity.RouteWaypoint;
 import com.bluesky.exception.BusinessException;
 import com.bluesky.mapper.MicroscaleWeatherMapper;
 import com.bluesky.mapper.RouteMapper;
-import com.bluesky.mapper.RouteWaypointMapper;
+import com.bluesky.util.TimeBucketUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -28,10 +27,9 @@ import java.util.*;
 public class RouteService {
 
     private final RouteMapper routeMapper;
-    private final RouteWaypointMapper waypointMapper;
-    private final RouteConfig routeConfig;
+    private final RouteLifecycleService routeLifecycleService;
     private final MicroscaleWeatherMapper microscaleWeatherMapper;
-    private final MonitoringPointService monitoringPointService;
+    private final LandingPointService landingPointService;
 
     private static final int SEGMENT_SAMPLE_COUNT = 7;
     private static final int PATH_POINT_COUNT = 10;
@@ -170,14 +168,14 @@ public class RouteService {
         return LocalDateTime.now();
     }
 
-    private MonitoringPoint selectMonitoringPoint(List<MonitoringPoint> points, double lng, double lat) {
+    private LandingPoint selectLandingPoint(List<LandingPoint> points, double lng, double lat) {
         if (points == null || points.isEmpty()) {
             return null;
         }
 
-        MonitoringPoint best = null;
+        LandingPoint best = null;
         double bestArea = Double.POSITIVE_INFINITY;
-        for (MonitoringPoint point : points) {
+        for (LandingPoint point : points) {
             if (point == null || point.getBboxMinLng() == null || point.getBboxMinLat() == null
                     || point.getBboxMaxLng() == null || point.getBboxMaxLat() == null) {
                 continue;
@@ -202,7 +200,7 @@ public class RouteService {
         }
 
         double bestD2 = Double.POSITIVE_INFINITY;
-        for (MonitoringPoint point : points) {
+        for (LandingPoint point : points) {
             if (point == null || point.getLongitude() == null || point.getLatitude() == null) {
                 continue;
             }
@@ -218,13 +216,22 @@ public class RouteService {
         return best;
     }
 
-    private GridSnapshot loadSnapshot(MonitoringPoint point, LocalDateTime targetTime) {
-        if (point == null || point.getId() == null) {
+    private GridSnapshot loadSnapshot(LandingPoint point, LocalDateTime targetTime) {
+        if (point == null || point.getLandingPointId() == null) {
             return null;
         }
 
+        try {
+            return loadSnapshotInternal(point, targetTime);
+        } catch (Exception ex) {
+            log.warn("微尺度天气数据不可用，起降点 {}: {}", point.getLandingPointId(), ex.getMessage());
+            return null;
+        }
+    }
+
+    private GridSnapshot loadSnapshotInternal(LandingPoint point, LocalDateTime targetTime) {
         LambdaQueryWrapper<MicroscaleWeather> latestQuery = new LambdaQueryWrapper<MicroscaleWeather>()
-                .eq(MicroscaleWeather::getPointId, point.getId());
+                .eq(MicroscaleWeather::getPointId, point.getLandingPointId());
         if (targetTime != null) {
             latestQuery.le(MicroscaleWeather::getDataTime, targetTime);
         }
@@ -237,7 +244,7 @@ public class RouteService {
 
         List<MicroscaleWeather> rows = microscaleWeatherMapper.selectList(
                 new LambdaQueryWrapper<MicroscaleWeather>()
-                        .eq(MicroscaleWeather::getPointId, point.getId())
+                        .eq(MicroscaleWeather::getPointId, point.getLandingPointId())
                         .eq(MicroscaleWeather::getDataTime, latest.getDataTime()));
         if (rows == null || rows.isEmpty()) {
             return null;
@@ -381,7 +388,7 @@ public class RouteService {
         return new SampleValue(risk01, windSpeed, windShear, turbulence, pickedReason);
     }
 
-    private SegmentMetrics evaluateSegment(List<MonitoringPoint> points,
+    private SegmentMetrics evaluateSegment(List<LandingPoint> points,
                                           Map<String, GridSnapshot> snapshotCache,
                                           double startLon, double startLat,
                                           double endLon, double endLat,
@@ -396,16 +403,16 @@ public class RouteService {
             double lng = startLon + (endLon - startLon) * t;
             double lat = startLat + (endLat - startLat) * t;
 
-            MonitoringPoint point = selectMonitoringPoint(points, lng, lat);
-            if (point == null || point.getId() == null) {
+            LandingPoint point = selectLandingPoint(points, lng, lat);
+            if (point == null || point.getLandingPointId() == null) {
                 continue;
             }
 
-            GridSnapshot snapshot = snapshotCache.get(point.getId());
+            GridSnapshot snapshot = snapshotCache.get(point.getLandingPointId());
             if (snapshot == null) {
                 snapshot = loadSnapshot(point, analysisTime);
                 if (snapshot != null) {
-                    snapshotCache.put(point.getId(), snapshot);
+                    snapshotCache.put(point.getLandingPointId(), snapshot);
                 }
             }
 
@@ -498,12 +505,8 @@ public class RouteService {
         return maps;
     }
 
-    private List<RouteWaypoint> getOrderedWaypoints(String routeId) {
-        return waypointMapper.selectList(
-                new LambdaQueryWrapper<RouteWaypoint>()
-                        .eq(RouteWaypoint::getRouteId, routeId)
-                        .orderByAsc(RouteWaypoint::getSequence)
-        );
+    private List<RouteWaypoint> getOrderedWaypoints(String routeId, String routeVersionId) {
+        return routeLifecycleService.listWaypoints(routeId, routeVersionId);
     }
 
     private List<WaypointNode> toWaypointNodes(List<RouteWaypoint> waypoints, double defaultHeight) {
@@ -655,7 +658,7 @@ public class RouteService {
             return new RouteMetrics(waypoints == null ? List.of() : waypoints, segmentData, dangers, 0d, 0d, 0d, 0);
         }
 
-        List<MonitoringPoint> monitoringPoints = monitoringPointService.getAll();
+        List<LandingPoint> landingPoints = landingPointService.listAllEntities();
         Map<String, GridSnapshot> snapshotCache = new HashMap<>();
 
         double totalDistance = 0d;
@@ -670,7 +673,7 @@ public class RouteService {
             totalDistance += segmentLength;
 
             SegmentMetrics metrics = evaluateSegment(
-                    monitoringPoints,
+                    landingPoints,
                     snapshotCache,
                     start.longitude, start.latitude,
                     end.longitude, end.latitude,
@@ -816,7 +819,11 @@ public class RouteService {
 
     private List<Map<String, Object>> buildSegmentAnalysis(RouteMetrics metrics) {
         List<Map<String, Object>> analysis = new ArrayList<>();
-        for (int i = 0; i < metrics.segmentData.size(); i++) {
+        if (metrics.waypoints == null || metrics.waypoints.size() < 2) {
+            return analysis;
+        }
+        int segmentCount = Math.min(metrics.segmentData.size(), metrics.waypoints.size() - 1);
+        for (int i = 0; i < segmentCount; i++) {
             Map<String, Object> segment = metrics.segmentData.get(i);
             WaypointNode start = metrics.waypoints.get(i);
             WaypointNode end = metrics.waypoints.get(i + 1);
@@ -1063,62 +1070,23 @@ public class RouteService {
         return chartData;
     }
 
-    /**
-     * 获取航路列表
-     */
-    public Map<String, Object> getRouteList() {
-        int maxHistoryCount = routeConfig.getMaxHistoryCount() != null ? routeConfig.getMaxHistoryCount() : 5;
-
-        List<Route> routes = routeMapper.selectList(
-                new LambdaQueryWrapper<Route>()
-                        .eq(Route::getIsActive, true)
-                        .orderByDesc(Route::getCreatedAt)
-                        .last("LIMIT " + maxHistoryCount)
-        );
-
-        List<Map<String, Object>> routeList = new ArrayList<>();
-        for (Route route : routes) {
-            List<RouteWaypoint> orderedWaypoints = getOrderedWaypoints(route.getId());
-            double defaultHeight = route.getFlightHeight() != null ? route.getFlightHeight() : 300d;
-            List<WaypointNode> waypointNodes = toWaypointNodes(orderedWaypoints, defaultHeight);
-            LocalDateTime analysisTime = route.getStartTime() != null ? route.getStartTime() : LocalDateTime.now();
-            RouteMetrics metrics = buildRouteMetrics(waypointNodes, analysisTime);
-            routeList.add(buildRoutePayload(route, waypointNodes, metrics));
+    public Map<String, Object> getRouteDetail(String routeId, String routeVersionId) {
+        log.debug("查询航线详情，航线ID: {}, 版本: {}", routeId, routeVersionId);
+        Map<String, Object> detail = routeLifecycleService.getRouteDetail(routeId, routeVersionId);
+        Route route = routeMapper.selectById(routeId);
+        if (route != null) {
+            applyTemporalMeta(detail, route.getStartTime() != null ? route.getStartTime() : LocalDateTime.now());
         }
-
-        long availableCount = routes.stream()
-                .filter(r -> "available".equals(r.getStatus()))
-                .count();
-
-        Map<String, Object> result = new HashMap<>();
-        result.put("routes", routeList);
-        result.put("total", routes.size());
-        result.put("available", (int) availableCount);
-        
-        return result;
+        return detail;
     }
 
-    /**
-     * 获取航路详情
-     */
-    public Map<String, Object> getRouteDetail(String routeId) {
-        log.debug("查询航线详情，航线ID: {}", routeId);
-        Route route = routeMapper.selectById(routeId);
-        if (route == null) {
-            log.warn("航线不存在，ID: {}", routeId);
-            throw new BusinessException(ResultCode.NOT_FOUND, "航线不存在: " + routeId);
-        }
-
-        List<RouteWaypoint> orderedWaypoints = getOrderedWaypoints(routeId);
-        double defaultHeight = route.getFlightHeight() != null ? route.getFlightHeight() : 300d;
-        List<WaypointNode> waypointNodes = toWaypointNodes(orderedWaypoints, defaultHeight);
-        LocalDateTime analysisTime = route.getStartTime() != null ? route.getStartTime() : LocalDateTime.now();
-        RouteMetrics metrics = buildRouteMetrics(waypointNodes, analysisTime);
-
-        log.debug("航线详情查询成功，ID: {}, 航段数: {}, 途经点数: {}",
-                routeId, metrics.segmentData.size(), waypointNodes.size());
-
-        return buildRoutePayload(route, waypointNodes, metrics);
+    private void applyTemporalMeta(Map<String, Object> payload, LocalDateTime requestedTime) {
+        OffsetDateTime requested = requestedTime.atZone(TimeBucketUtil.ZONE).toOffsetDateTime();
+        var meta = TimeBucketUtil.buildMeta(requested, TimeBucketUtil.now(), false);
+        payload.put("requestedTime", meta.getRequestedTime());
+        payload.put("bucketTime", meta.getBucketTime());
+        payload.put("computedAt", meta.getComputedAt());
+        payload.put("isStale", meta.getIsStale());
     }
 
 
@@ -1135,120 +1103,6 @@ public class RouteService {
     }
 
     /**
-     * 创建新航线（前端只传递基本数据，后端计算里程、风险等）
-     */
-    public Map<String, Object> createRoute(Map<String, Object> routeData) {
-        try {
-            List<Route> allRoutes = routeMapper.selectList(
-                    new LambdaQueryWrapper<Route>()
-                            .eq(Route::getIsActive, true)
-                            .orderByAsc(Route::getCreatedAt)
-            );
-            //最大存储的历史记录数
-            int maxHistoryCount = routeConfig.getMaxHistoryCount() != null ? routeConfig.getMaxHistoryCount() : 5;
-
-            if (allRoutes.size() >= maxHistoryCount) {
-                Route oldest = allRoutes.get(0);
-                routeMapper.deleteById(oldest.getId());
-                log.info("删除最旧航线记录，ID: {}, 名称: {}, 保持最多 {} 条记录",
-                        oldest.getId(), oldest.getName(), maxHistoryCount);
-            }
-
-            if (routeData == null
-                    || !routeData.containsKey("startName")
-                    || !routeData.containsKey("startLon")
-                    || !routeData.containsKey("startLat")
-                    || !routeData.containsKey("endName")
-                    || !routeData.containsKey("endLon")
-                    || !routeData.containsKey("endLat")) {
-                throw new BusinessException(ResultCode.BAD_REQUEST, "缺少必要的起点或终点数据");
-            }
-
-            String startName = parseString(routeData.get("startName"), "起点");
-            double startLon = parseDouble(routeData.get("startLon"), Double.NaN);
-            double startLat = parseDouble(routeData.get("startLat"), Double.NaN);
-            String endName = parseString(routeData.get("endName"), "终点");
-            double endLon = parseDouble(routeData.get("endLon"), Double.NaN);
-            double endLat = parseDouble(routeData.get("endLat"), Double.NaN);
-
-            if (!Double.isFinite(startLon) || !Double.isFinite(startLat)
-                    || !Double.isFinite(endLon) || !Double.isFinite(endLat)) {
-                throw new BusinessException(ResultCode.BAD_REQUEST, "起点或终点坐标无效");
-            }
-
-            String aircraftModel = parseString(routeData.get("aircraftModel"), "未知型号");
-            double flightHeight = parseDouble(routeData.get("flightHeight"), 300d);
-            LocalDateTime now = LocalDateTime.now();
-            LocalDateTime startTime = parseDateTime(routeData.get("startTime"), now);
-            LocalDateTime endTime = parseDateTime(routeData.get("endTime"), startTime.plusHours(1));
-            if (!endTime.isAfter(startTime)) {
-                endTime = startTime.plusHours(1);
-            }
-
-            List<WaypointNode> waypointNodes = buildWaypointNodesFromRequest(
-                    routeData,
-                    startName,
-                    startLon,
-                    startLat,
-                    endName,
-                    endLon,
-                    endLat,
-                    flightHeight
-            );
-            if (waypointNodes.size() < 2) {
-                throw new BusinessException(ResultCode.BAD_REQUEST, "航线至少需要有效的起点和终点");
-            }
-
-            RouteMetrics metrics = buildRouteMetrics(waypointNodes, startTime);
-
-            Route route = new Route();
-            String routeId = "route-" + System.currentTimeMillis();
-            route.setId(routeId);
-            route.setName(startName + "-" + endName);
-            route.setStartName(startName);
-            route.setEndName(endName);
-            route.setDistance(metrics.totalDistance);
-            //预计飞行时间
-            route.setEstimatedTime(estimateMinutes(metrics.totalDistance));
-            route.setStatus("available");
-            route.setIsActive(true);
-            route.setAverageRisk(metrics.averageRisk);
-            route.setAircraftModel(aircraftModel);
-            route.setFlightHeight(flightHeight);
-            route.setStartTime(startTime);
-            route.setEndTime(endTime);
-            route.setCreatedAt(now);
-            route.setUpdatedAt(now);
-
-            routeMapper.insert(route);
-
-            for (int i = 0; i < waypointNodes.size(); i++) {
-                WaypointNode node = waypointNodes.get(i);
-                RouteWaypoint waypoint = new RouteWaypoint();
-                waypoint.setId(routeId + "-wp-" + i);
-                waypoint.setRouteId(routeId);
-                waypoint.setSequence(i);
-                waypoint.setName(node.name);
-                waypoint.setLongitude(node.longitude);
-                waypoint.setLatitude(node.latitude);
-                waypoint.setAltitude(node.altitude);
-                waypoint.setCreatedAt(now);
-                waypointMapper.insert(waypoint);
-            }
-
-            log.info("成功创建航线，ID: {}, 名称: {}, 距离: {} km, 途经点: {} 个",
-                    routeId, route.getName(), metrics.totalDistance, waypointNodes.size());
-
-            return buildRoutePayload(route, waypointNodes, metrics);
-        } catch (BusinessException e) {
-            throw e;
-        } catch (Exception e) {
-            log.error("航线创建失败", e);
-            throw new BusinessException(ResultCode.INTERNAL_SERVER_ERROR, "航线创建失败");
-        }
-    }
-
-    /**
      * 分析航线风险
      */
     public Map<String, Object> analyzeRouteRisk(String routeId, Map<String, Object> params) {
@@ -1258,8 +1112,13 @@ public class RouteService {
                 throw new BusinessException(ResultCode.NOT_FOUND, "航线不存在: " + routeId);
             }
 
+            String routeVersionId = params != null && params.get("routeVersionId") != null
+                    ? String.valueOf(params.get("routeVersionId"))
+                    : null;
+            String versionId = routeLifecycleService.resolveVersionId(route, routeVersionId);
+
             LocalDateTime currentAnalysisTime = resolveAnalysisTime(route, params);
-            List<RouteWaypoint> orderedWaypoints = getOrderedWaypoints(routeId);
+            List<RouteWaypoint> orderedWaypoints = getOrderedWaypoints(routeId, versionId);
             double defaultHeight = route.getFlightHeight() != null ? route.getFlightHeight() : 300d;
             List<WaypointNode> waypointNodes = toWaypointNodes(orderedWaypoints, defaultHeight);
             RouteMetrics metrics = buildRouteMetrics(waypointNodes, currentAnalysisTime);
@@ -1267,6 +1126,9 @@ public class RouteService {
             List<Map<String, Object>> alternativeRoutes = buildAlternativeRoutes(route, metrics, currentAnalysisTime);
 
             Map<String, Object> analysis = buildRoutePayload(route, waypointNodes, metrics);
+            analysis.put("routeVersionId", versionId);
+            analysis.put("currentVersionId", route.getCurrentVersionId());
+            analysis.put("regionId", route.getRegionId());
             analysis.put("analysisTime", LocalDateTime.now().toString());
             analysis.put("currentAnalysisTime", currentAnalysisTime.toString());
             analysis.put("riskDimensions", buildRiskDimensions(metrics));
@@ -1274,10 +1136,16 @@ public class RouteService {
             analysis.put("segmentAnalysis", buildSegmentAnalysis(metrics));
             analysis.put("measures", measures);
             analysis.put("alternativeRoutes", alternativeRoutes);
-            analysis.put("riskChart", generateRiskChartData(route, waypointNodes));
+            try {
+                analysis.put("riskChart", generateRiskChartData(route, waypointNodes));
+            } catch (Exception chartEx) {
+                log.warn("风险图表生成跳过，routeId={}: {}", routeId, chartEx.getMessage());
+                analysis.put("riskChart", Map.of("timeLabels", List.of(), "riskValues", List.of()));
+            }
+            applyTemporalMeta(analysis, currentAnalysisTime);
 
-            log.info("航线风险分析完成，航线ID: {}, 分析时间点: {}, 航段数: {}",
-                    routeId, currentAnalysisTime, metrics.segmentData.size());
+            log.info("航线风险分析完成，航线ID: {}, 版本: {}, 分析时间点: {}, 航段数: {}",
+                    routeId, versionId, currentAnalysisTime, metrics.segmentData.size());
 
             return analysis;
         } catch (BusinessException e) {
@@ -1331,22 +1199,5 @@ public class RouteService {
         }
 
         return recommendations;
-    }
-
-    /**
-     * 清空航路历史记录
-     */
-    public Map<String, Object> clearHistory() {
-        try {
-            // 删除所有航路记录，由于外键约束会级联删除相关表数据
-            int deletedCount = routeMapper.delete(null); // 删除所有记录
-            
-            Map<String, Object> result = new HashMap<>();
-            result.put("deletedCount", deletedCount);
-            return result;
-        } catch (Exception e) {
-            log.error("清空历史记录失败", e);
-            throw new BusinessException(ResultCode.INTERNAL_SERVER_ERROR, "清空历史记录失败");
-        }
     }
 }

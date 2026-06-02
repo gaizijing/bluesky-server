@@ -56,6 +56,12 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- Flyway -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+
         <!-- MyBatis-Plus (Spring Boot 3 专用 starter，解决 3.2 兼容性问题) -->
         <dependency>
             <groupId>com.baomidou</groupId>

@@ -19,7 +19,7 @@ import java.util.List;
 public class CameraService {
 
     private final CameraMapper cameraMapper;
-    private final MonitoringPointService monitoringPointService;
+    private final LandingPointService landingPointService;
 
     /**
      * Get cameras filtered by status and monitoring point.
@@ -155,7 +155,7 @@ public class CameraService {
         String normalizedPointId = normalizeRequiredText(pointId, "关联监测点不能为空");
 
         // Validate the referenced monitoring point exists.
-        return monitoringPointService.getById(normalizedPointId).getId();
+        return landingPointService.getEntity(normalizedPointId).getLandingPointId();
     }
 
     private String normalizeStatus(String status) {
