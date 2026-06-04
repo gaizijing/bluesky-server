@@ -27,8 +27,11 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.GZIPInputStream;
+import com.bluesky.util.TimeBucketUtil;
 
 /**
  * 气象数据服务
@@ -40,7 +43,8 @@ import java.util.zip.GZIPInputStream;
 public class WeatherService {
 
     private final WeatherRealtimeMapper weatherRealtimeMapper;
-    private final MicroscaleWeatherMapper microscaleWeatherMapper;
+    private final RiskFieldCacheMapper riskFieldCacheMapper;
+    private static final int DEFAULT_RISK_HEIGHT_M = 100;
     private final WeatherForecastMapper weatherForecastMapper;
     private final AircraftLimitMapper aircraftLimitMapper;
     private final LandingPointService landingPointService;
@@ -52,6 +56,22 @@ public class WeatherService {
     private static final int CITYWIDE_GAUSSIAN_NEIGHBOR_LIMIT = 30;
     private static final int CITYWIDE_FAST_GRID_SIZE = 70;
     private static final int CITYWIDE_FAST_MAX_POINTS = 12000;
+    private static final long FORECAST_CACHE_TTL_MS = 10 * 60 * 1000L;
+
+    private record ForecastSample(LocalDateTime time, double windSpeedMs, double visibilityKm,
+                                  double precipMmH, double temperatureC, int weatherCode) {}
+
+    private static final class ForecastSeriesCache {
+        private final long fetchedAtMs;
+        private final List<ForecastSample> samples;
+
+        private ForecastSeriesCache(long fetchedAtMs, List<ForecastSample> samples) {
+            this.fetchedAtMs = fetchedAtMs;
+            this.samples = samples;
+        }
+    }
+
+    private final ConcurrentHashMap<String, ForecastSeriesCache> forecastSeriesCache = new ConcurrentHashMap<>();
 
     private static final class IdwSamplePoint {
         private final double lng;
@@ -175,13 +195,174 @@ public class WeatherService {
      * 适飞计算用气象因子（V2 无 weather_realtime 时走和风坐标查询）
      */
     public Map<String, Object> buildFlyabilityWeatherMap(String pointId) {
+        return buildFlyabilityWeatherMap(pointId, TimeBucketUtil.currentBucketLocal());
+    }
+
+    public Map<String, Object> buildFlyabilityWeatherMap(String pointId, LocalDateTime bucketTime) {
         LandingPoint point = landingPointService.getEntity(pointId);
         return buildFlyabilityWeatherMap(
-                point.getLongitude().doubleValue(), point.getLatitude().doubleValue());
+                point.getLongitude().doubleValue(), point.getLatitude().doubleValue(), bucketTime);
     }
 
     public Map<String, Object> buildFlyabilityWeatherMap(double lng, double lat) {
-        return toFlyabilityFactorMap(getWeatherByCoordinates(lng, lat));
+        return buildFlyabilityWeatherMap(lng, lat, TimeBucketUtil.currentBucketLocal());
+    }
+
+    /** 按 15min 时间桶取气象：当前及过去桶走实时，未来桶走 Open-Meteo 预报 */
+    public Map<String, Object> buildFlyabilityWeatherMap(double lng, double lat, LocalDateTime bucketTime) {
+        LocalDateTime bucket = TimeBucketUtil.toBucketLocal(
+                bucketTime.atZone(TimeBucketUtil.ZONE).toOffsetDateTime());
+        if (!bucket.isAfter(TimeBucketUtil.currentBucketLocal())) {
+            return toFlyabilityFactorMap(getWeatherByCoordinates(lng, lat));
+        }
+        return buildFlyabilityWeatherFromForecast(lng, lat, bucket);
+    }
+
+    private Map<String, Object> buildFlyabilityWeatherFromForecast(double lng, double lat, LocalDateTime bucket) {
+        ForecastSample sample = findForecastSample(lng, lat, bucket);
+        if (sample == null) {
+            log.warn("预报未命中 bucket={} at {},{}，回退实时气象", bucket, lng, lat);
+            return toFlyabilityFactorMap(getWeatherByCoordinates(lng, lat));
+        }
+        Map<String, Object> flat = new LinkedHashMap<>();
+        flat.put("windSpeed", sample.windSpeedMs());
+        flat.put("visibility", sample.visibilityKm());
+        flat.put("precipitation", sample.precipMmH());
+        flat.put("temperature", sample.temperatureC());
+        flat.put("cloudBase", estimateCloudBaseM(sample.weatherCode()));
+        return flat;
+    }
+
+    private double estimateCloudBaseM(int weatherCode) {
+        if (weatherCode >= 45 && weatherCode <= 48) {
+            return 120d;
+        }
+        if (weatherCode >= 51 && weatherCode <= 67) {
+            return 250d;
+        }
+        if (weatherCode >= 71 && weatherCode <= 77) {
+            return 200d;
+        }
+        if (weatherCode >= 80 && weatherCode <= 99) {
+            return 180d;
+        }
+        return 500d;
+    }
+
+    private ForecastSample findForecastSample(double lng, double lat, LocalDateTime bucket) {
+        List<ForecastSample> series = loadForecastSeries(lng, lat);
+        if (series.isEmpty()) {
+            return null;
+        }
+        ForecastSample exact = null;
+        ForecastSample nearest = null;
+        long nearestMinutes = Long.MAX_VALUE;
+        for (ForecastSample sample : series) {
+            if (sample.time().equals(bucket)) {
+                exact = sample;
+                break;
+            }
+            long diff = Math.abs(ChronoUnit.MINUTES.between(sample.time(), bucket));
+            if (diff < nearestMinutes) {
+                nearestMinutes = diff;
+                nearest = sample;
+            }
+        }
+        if (exact != null) {
+            return exact;
+        }
+        return nearestMinutes <= TimeBucketUtil.BUCKET_MINUTES ? nearest : null;
+    }
+
+    private List<ForecastSample> loadForecastSeries(double lng, double lat) {
+        String key = String.format(Locale.US, "%.4f,%.4f", lng, lat);
+        long nowMs = System.currentTimeMillis();
+        ForecastSeriesCache cached = forecastSeriesCache.get(key);
+        if (cached != null && nowMs - cached.fetchedAtMs < FORECAST_CACHE_TTL_MS) {
+            return cached.samples;
+        }
+        List<ForecastSample> samples = fetchOpenMeteoForecastSeries(lng, lat);
+        forecastSeriesCache.put(key, new ForecastSeriesCache(nowMs, samples));
+        return samples;
+    }
+
+    private List<ForecastSample> fetchOpenMeteoForecastSeries(double lng, double lat) {
+        String url = String.format(Locale.US,
+                "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f&timezone=Asia%%2FShanghai"
+                        + "&minutely_15=temperature_2m,wind_speed_10m,visibility,precipitation,weather_code&forecast_days=1",
+                lat, lng);
+        Map<String, Object> raw = callOpenMeteoAPI(url);
+        if (raw == null) {
+            return List.of();
+        }
+        List<String> times = castList(raw.get("time_iso"));
+        if (times == null || times.isEmpty()) {
+            times = castList(raw.get("time"));
+        }
+        if (times == null || times.isEmpty()) {
+            return List.of();
+        }
+        List<Double> temperatures = castList(raw.get("temperature_2m"));
+        List<Double> windSpeeds = castList(raw.get("wind_speed_10m"));
+        List<Integer> visibilities = castList(raw.get("visibility"));
+        List<Double> precipitations = castList(raw.get("precipitation"));
+        List<Integer> weatherCodes = castList(raw.get("weather_code"));
+
+        List<ForecastSample> samples = new ArrayList<>();
+        for (int i = 0; i < times.size(); i++) {
+            LocalDateTime time = parseForecastTime(times.get(i));
+            if (time == null) {
+                continue;
+            }
+            double windMs = valueAt(windSpeeds, i, 0d) / 3.6d;
+            double visibilityKm = valueAt(visibilities, i, 0);
+            samples.add(new ForecastSample(
+                    time,
+                    windMs,
+                    visibilityKm,
+                    valueAt(precipitations, i, 0d),
+                    valueAt(temperatures, i, 0d),
+                    valueAt(weatherCodes, i, 0)));
+        }
+        return samples;
+    }
+
+    private LocalDateTime parseForecastTime(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            if (raw.length() <= 5 && raw.contains(":")) {
+                LocalTime time = LocalTime.parse(raw.length() == 5 ? raw : ("0" + raw));
+                return LocalDate.now(TimeBucketUtil.ZONE).atTime(time);
+            }
+            return LocalDateTime.parse(raw);
+        } catch (Exception ex) {
+            log.warn("无法解析预报时间: {}", raw);
+            return null;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> List<T> castList(Object value) {
+        if (value instanceof List<?> list) {
+            return (List<T>) list;
+        }
+        return null;
+    }
+
+    private double valueAt(List<Double> values, int index, double fallback) {
+        if (values == null || index >= values.size() || values.get(index) == null) {
+            return fallback;
+        }
+        return values.get(index);
+    }
+
+    private int valueAt(List<Integer> values, int index, int fallback) {
+        if (values == null || index >= values.size() || values.get(index) == null) {
+            return fallback;
+        }
+        return values.get(index);
     }
 
     /** V2：和风坐标结果 → 统一气象点字段（m/s、km 等） */
@@ -266,20 +447,24 @@ public class WeatherService {
      * 获取微尺度天气数据(热力图)
      */
     public Map<String, Object> getMicroscaleWeather(String region, String timeRange) {
-        LambdaQueryWrapper<MicroscaleWeather> wrapper = new LambdaQueryWrapper<MicroscaleWeather>()
-                .orderByDesc(MicroscaleWeather::getDataTime)
-                .last("LIMIT 1000");
-
-        if (region != null && !region.isEmpty()) {
-            wrapper.eq(MicroscaleWeather::getPointId, region);
-        }
-
-        List<MicroscaleWeather> list = microscaleWeatherMapper.selectList(wrapper);
+        LocalDateTime targetTime = parseRequestTime(timeRange);
+        String regionId = region != null && !region.isBlank()
+                ? region
+                : regionService.getDefault().getRegionId();
+        var regionEntity = regionService.getEntity(regionId);
+        List<RiskFieldCache> cells = loadRiskFieldCells(
+                regionId,
+                targetTime,
+                DEFAULT_RISK_HEIGHT_M,
+                regionEntity.getWest(),
+                regionEntity.getSouth(),
+                regionEntity.getEast(),
+                regionEntity.getNorth());
 
         Map<String, Object> result = new HashMap<>();
         result.put("updateTime", LocalDateTime.now().toString());
-        result.put("region", region);
-        result.put("data", list);
+        result.put("region", regionId);
+        result.put("data", cells);
         return result;
     }
 
@@ -329,42 +514,34 @@ public class WeatherService {
         double pointMaxLng = monitor.getBboxMaxLng().doubleValue();
         double pointMaxLat = monitor.getBboxMaxLat().doubleValue();
 
-        List<MicroscaleWeather> weatherList = getWeatherPointsFromDatabase(monitor.getLandingPointId(), targetTime);
-        List<Map<String, Object>> points = new ArrayList<>(weatherList.size());
+        String regionId = monitor.getRegionId();
+        if (regionId == null || regionId.isBlank()) {
+            return Collections.emptyList();
+        }
 
-        for (MicroscaleWeather weather : weatherList) {
-            int gridSize = weather.getGridSize() != null ? weather.getGridSize() : 10;
-            if (gridSize <= 1) {
+        List<RiskFieldCache> cells = loadRiskFieldCells(
+                regionId,
+                targetTime,
+                DEFAULT_RISK_HEIGHT_M,
+                pointMinLng,
+                pointMinLat,
+                pointMaxLng,
+                pointMaxLat);
+
+        List<Map<String, Object>> points = new ArrayList<>(cells.size());
+        for (RiskFieldCache cell : cells) {
+            if (cell.getLng() == null || cell.getLat() == null || cell.getValue() == null) {
                 continue;
             }
-
-            if (weather.getGridX() == null || weather.getGridY() == null || weather.getRiskLevel() == null) {
-                continue;
-            }
-
-            double gridX = weather.getGridX().doubleValue();
-            double gridY = weather.getGridY().doubleValue();
-            double lng = pointMinLng + (pointMaxLng - pointMinLng) * (gridX / (double) (gridSize - 1));
-            double lat = pointMinLat + (pointMaxLat - pointMinLat) * (gridY / (double) (gridSize - 1));
-
             Map<String, Object> point = new HashMap<>();
-            point.put("lnglat", Arrays.asList(lng, lat));
-            point.put("value", weather.getRiskLevel());
-            if (weather.getReason() != null && !weather.getReason().isBlank()) {
-                point.put("reason", weather.getReason());
+            point.put("lnglat", Arrays.asList(cell.getLng(), cell.getLat()));
+            point.put("value", cell.getValue());
+            if (cell.getReason() != null && !cell.getReason().isBlank()) {
+                point.put("reason", cell.getReason());
             }
-            if (weather.getWindSpeed() != null) {
-                point.put("windSpeed", weather.getWindSpeed());
+            if (cell.getLevel() != null) {
+                point.put("level", cell.getLevel());
             }
-            if (weather.getWindShear() != null) {
-                point.put("windShear", weather.getWindShear());
-            }
-            if (weather.getTurbulence() != null) {
-                point.put("turbulence", weather.getTurbulence());
-            }
-            point.put("gridX", gridX);
-            point.put("gridY", gridY);
-            point.put("gridSize", gridSize);
             point.put("bboxMinLng", pointMinLng);
             point.put("bboxMinLat", pointMinLat);
             point.put("bboxMaxLng", pointMaxLng);
@@ -374,32 +551,34 @@ public class WeatherService {
         return points;
     }
 
-    /**
-     * Read one snapshot (same data_time) for a monitoring point.
-     */
-    private List<MicroscaleWeather> getWeatherPointsFromDatabase(String pointId, LocalDateTime targetTime) {
-        if (pointId == null || pointId.isEmpty()) {
+    private List<RiskFieldCache> loadRiskFieldCells(String regionId, LocalDateTime targetTime, int heightM,
+                                                    Double west, Double south, Double east, Double north) {
+        if (regionId == null || regionId.isBlank()) {
             return Collections.emptyList();
         }
 
-        LambdaQueryWrapper<MicroscaleWeather> latestQuery = new LambdaQueryWrapper<MicroscaleWeather>()
-                .eq(MicroscaleWeather::getPointId, pointId);
+        LambdaQueryWrapper<RiskFieldCache> latestWrapper = new LambdaQueryWrapper<RiskFieldCache>()
+                .eq(RiskFieldCache::getRegionId, regionId)
+                .eq(RiskFieldCache::getHeightM, heightM);
         if (targetTime != null) {
-            latestQuery.le(MicroscaleWeather::getDataTime, targetTime);
+            latestWrapper.le(RiskFieldCache::getBucketTime, targetTime);
         }
-        latestQuery.orderByDesc(MicroscaleWeather::getDataTime).last("LIMIT 1");
+        latestWrapper.orderByDesc(RiskFieldCache::getBucketTime).last("LIMIT 1");
 
-        MicroscaleWeather latest = microscaleWeatherMapper.selectOne(latestQuery);
-        if (latest == null || latest.getDataTime() == null) {
+        RiskFieldCache latest = riskFieldCacheMapper.selectOne(latestWrapper);
+        if (latest == null || latest.getBucketTime() == null) {
             return Collections.emptyList();
         }
 
-        return microscaleWeatherMapper.selectList(
-                new LambdaQueryWrapper<MicroscaleWeather>()
-                        .eq(MicroscaleWeather::getPointId, pointId)
-                        .eq(MicroscaleWeather::getDataTime, latest.getDataTime())
-                        .orderByAsc(MicroscaleWeather::getGridY)
-                        .orderByAsc(MicroscaleWeather::getGridX));
+        LambdaQueryWrapper<RiskFieldCache> wrapper = new LambdaQueryWrapper<RiskFieldCache>()
+                .eq(RiskFieldCache::getRegionId, regionId)
+                .eq(RiskFieldCache::getBucketTime, latest.getBucketTime())
+                .eq(RiskFieldCache::getHeightM, heightM);
+        if (west != null && east != null && south != null && north != null) {
+            wrapper.ge(RiskFieldCache::getLng, west).le(RiskFieldCache::getLng, east)
+                    .ge(RiskFieldCache::getLat, south).le(RiskFieldCache::getLat, north);
+        }
+        return riskFieldCacheMapper.selectList(wrapper);
     }
 
     /**
@@ -407,7 +586,10 @@ public class WeatherService {
      */
     public Map<String, Object> getWeatherHeatmapGeo(String bounds, String time, String pointId) {
         LocalDateTime targetTime = parseRequestTime(time);
-        List<Map<String, Object>> points = generateCommonHeatmapData(bounds, Collections.singletonList(pointId), targetTime);
+        List<String> pointIds = pointId != null && !pointId.isBlank()
+                ? Collections.singletonList(pointId)
+                : null;
+        List<Map<String, Object>> points = generateCommonHeatmapData(bounds, pointIds, targetTime);
 
         Map<String, Object> result = new HashMap<>();
         result.put("data", points);
@@ -1390,10 +1572,12 @@ public class WeatherService {
                     ObjectNode minutely15Object = (ObjectNode) jsonResponse.get("minutely_15");
                     ArrayNode timeArray = (ArrayNode) minutely15Object.get("time");
                     List<String> times = new ArrayList<>();
+                    List<String> timeIso = new ArrayList<>();
                     for (int i = 0; i < timeArray.size(); i++) {
                         String timeStr = timeArray.get(i).asText();
                         // 解析 ISO 8601 时间格式
                         LocalDateTime time = LocalDateTime.parse(timeStr);
+                        timeIso.add(timeStr);
                         times.add(String.format("%02d:%02d", time.getHour(), time.getMinute()));
                     }
 
@@ -1437,6 +1621,7 @@ public class WeatherService {
                     }
 
                     minutely15.put("time", times);
+                    minutely15.put("time_iso", timeIso);
                     minutely15.put("temperature_2m", temperature);
                     minutely15.put("precipitation", precipitation);
                     minutely15.put("wind_speed_10m", windSpeed);

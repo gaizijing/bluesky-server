@@ -11,6 +11,7 @@ import com.bluesky.mapper.VerticalProfileMapper;
 import com.bluesky.scheduler.service.WeatherGridCacheService;
 import com.bluesky.util.TimeBucketUtil;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -18,6 +19,7 @@ import java.time.OffsetDateTime;
 import java.math.BigDecimal;
 import java.util.*;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class WeatherQueryService {
@@ -61,32 +63,35 @@ public class WeatherQueryService {
         OffsetDateTime requested = TimeBucketUtil.parseOrNow(time);
         LocalDateTime bucketLocal = TimeBucketUtil.toBucket(requested)
                 .atZoneSameInstant(TimeBucketUtil.ZONE).toLocalDateTime();
-        String productKey = product != null && !product.isBlank() ? product : "temperature";
+        String productKey = normalizeGridProduct(product);
 
-        var cacheOpt = weatherGridCacheService.find(regionId, bucketLocal, heightM, productKey);
+        var cacheOpt = weatherGridCacheService.findWithValidGrid(regionId, bucketLocal, heightM, productKey);
         if (cacheOpt.isPresent()) {
             WeatherGridCache cache = cacheOpt.get();
+            List<Map<String, Object>> grid = weatherGridCacheService.toGridPoints(cache);
             TemporalMeta meta = TimeBucketUtil.buildMeta(requested, TimeBucketUtil.now(), false);
+            boolean bucketMismatch = !cache.getBucketTime().equals(bucketLocal);
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("regionId", regionId);
             payload.put("product", productKey);
             payload.put("heightM", heightM);
             payload.put("requestedTime", meta.getRequestedTime());
             payload.put("bucketTime", meta.getBucketTime());
+            payload.put("cacheBucketTime", cache.getBucketTime());
+            payload.put("cacheHit", true);
+            payload.put("cacheStaleBucket", bucketMismatch);
             payload.put("computedAt", cache.getComputedAt() != null
                     ? cache.getComputedAt().atZone(TimeBucketUtil.ZONE).toOffsetDateTime()
                     : meta.getComputedAt());
-            payload.put("isStale", false);
-            payload.put("grid", weatherGridCacheService.toGridPoints(cache));
+            payload.put("isStale", bucketMismatch);
+            payload.put("grid", grid);
             return payload;
         }
 
-        TemporalMeta meta = TimeBucketUtil.buildMeta(requested, TimeBucketUtil.now(), true);
-        var region = regionService.getEntity(regionId);
-        String bounds = String.format("[%s,%s,%s,%s]",
-                region.getWest(), region.getSouth(), region.getEast(), region.getNorth());
-        Map<String, Object> heatmap = weatherService.getWeatherHeatmapGeo(bounds, meta.getBucketTime().toString(), null);
+        log.warn("weather_grid_cache 无有效格点: region={} product={} heightM={} bucket={} — 重启后端触发 Flyway V8 或 POST /scheduler/recompute?regionId={}",
+                regionId, productKey, heightM, bucketLocal, regionId);
 
+        TemporalMeta meta = TimeBucketUtil.buildMeta(requested, TimeBucketUtil.now(), true);
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("regionId", regionId);
         payload.put("product", productKey);
@@ -95,7 +100,8 @@ public class WeatherQueryService {
         payload.put("bucketTime", meta.getBucketTime());
         payload.put("computedAt", meta.getComputedAt());
         payload.put("isStale", true);
-        payload.put("grid", heatmap.getOrDefault("points", List.of()));
+        payload.put("grid", List.of());
+        payload.put("cacheMiss", true);
         return payload;
     }
 
@@ -176,6 +182,100 @@ public class WeatherQueryService {
             return Double.parseDouble(String.valueOf(value));
         } catch (Exception e) {
             return 0d;
+        }
+    }
+
+    /** 与 RegionGridSampler / 种子数据 product 命名对齐 */
+    private String normalizeGridProduct(String product) {
+        if (product == null || product.isBlank()) {
+            return "temperature";
+        }
+        return switch (product.trim().toLowerCase()) {
+            case "precipitation", "precip" -> "precip";
+            case "wind", "visibility", "humidity", "temperature", "cloud", "pressure" -> product.trim().toLowerCase();
+            default -> product.trim();
+        };
+    }
+
+    private boolean hasValidGridValues(List<Map<String, Object>> grid) {
+        if (grid == null || grid.isEmpty()) {
+            return false;
+        }
+        return grid.stream().anyMatch(c -> c.get("value") != null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> normalizeHeatmapToGrid(Map<String, Object> heatmap) {
+        if (heatmap == null || heatmap.isEmpty()) {
+            return List.of();
+        }
+
+        Object raw = heatmap.get("data");
+        if (raw == null) {
+            raw = heatmap.get("points");
+        }
+        if (raw == null) {
+            raw = heatmap.get("grid");
+        }
+        if (!(raw instanceof List<?> source) || source.isEmpty()) {
+            return List.of();
+        }
+
+        List<Map<String, Object>> grid = new ArrayList<>();
+        for (Object item : source) {
+            if (!(item instanceof Map<?, ?> src)) {
+                continue;
+            }
+            Double lng = extractCoordinate(src, "lng", "longitude", "lon", "x");
+            Double lat = extractCoordinate(src, "lat", "latitude", "y");
+            if (lng == null || lat == null) {
+                Object lngLatObj = src.get("lnglat");
+                if (lngLatObj instanceof List<?> lngLat && lngLat.size() >= 2) {
+                    lng = toDouble(lngLat.get(0));
+                    lat = toDouble(lngLat.get(1));
+                }
+            }
+            if (lng == null || lat == null) {
+                continue;
+            }
+
+            Map<String, Object> cell = new LinkedHashMap<>();
+            cell.put("lng", lng);
+            cell.put("lat", lat);
+            Object value = src.get("value");
+            if (value != null) {
+                cell.put("value", value);
+            }
+            Object reason = src.get("reason");
+            if (reason != null) {
+                cell.put("reason", reason);
+            }
+            grid.add(cell);
+        }
+        return grid;
+    }
+
+    private Double extractCoordinate(Map<?, ?> src, String... keys) {
+        for (String key : keys) {
+            Double parsed = toDouble(src.get(key));
+            if (parsed != null) {
+                return parsed;
+            }
+        }
+        return null;
+    }
+
+    private Double toDouble(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        try {
+            return Double.parseDouble(String.valueOf(value));
+        } catch (Exception ex) {
+            return null;
         }
     }
 }

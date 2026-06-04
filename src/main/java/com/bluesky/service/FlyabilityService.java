@@ -5,9 +5,11 @@ import com.bluesky.common.TemporalMeta;
 import com.bluesky.entity.FlyabilityRuleSet;
 import com.bluesky.entity.LandingPoint;
 import com.bluesky.entity.OsiLandingCache;
+import com.bluesky.entity.OsiRouteCache;
 import com.bluesky.entity.RouteWaypoint;
 import com.bluesky.enums.FlyabilityLevel;
 import com.bluesky.mapper.OsiLandingCacheMapper;
+import com.bluesky.mapper.OsiRouteCacheMapper;
 import com.bluesky.service.flyability.FlyabilityCalculator;
 import com.bluesky.util.TimeBucketUtil;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -28,6 +30,7 @@ public class FlyabilityService {
     private final WeatherService weatherService;
     private final RegionService regionService;
     private final OsiLandingCacheMapper osiLandingCacheMapper;
+    private final OsiRouteCacheMapper osiRouteCacheMapper;
     private final RouteLifecycleService routeLifecycleService;
     private final FlyabilityCalculator calculator;
     private final ObjectMapper objectMapper;
@@ -102,6 +105,7 @@ public class FlyabilityService {
         }
 
         TemporalMeta meta = TimeBucketUtil.buildMeta(requested, TimeBucketUtil.now(), false);
+        boolean anyStale = matrix.stream().anyMatch(c -> Boolean.TRUE.equals(c.get("isStale")));
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("regionId", regionId);
         payload.put("routeId", routeId);
@@ -110,20 +114,20 @@ public class FlyabilityService {
         payload.put("bucketTime", meta.getBucketTime());
         payload.put("requestedTime", meta.getRequestedTime());
         payload.put("computedAt", meta.getComputedAt());
-        payload.put("isStale", meta.getIsStale());
+        payload.put("isStale", anyStale);
         payload.put("matrix", matrix);
         return payload;
     }
 
-    private Map<String, Object> buildRouteCell(String routeId, String routeVersionId,
-                                               List<RouteWaypoint> waypoints, OffsetDateTime bucket,
-                                               FlyabilityRuleSet ruleSet, String ruleVersion) {
+    /** 供调度任务写入 osi_route_cache */
+    public Map<String, Object> evaluateRouteAtBucket(List<RouteWaypoint> waypoints, LocalDateTime bucketTime,
+                                                     String rulesJson) {
         FlyabilityLevel aggregate = FlyabilityLevel.GREEN;
         List<Map<String, Object>> segmentResults = new ArrayList<>();
         for (RouteWaypoint wp : waypoints) {
             Map<String, Object> weather = weatherService.buildFlyabilityWeatherMap(
-                    wp.getLongitude(), wp.getLatitude());
-            Map<String, Object> evaluated = calculator.evaluate(ruleSet.getRulesJson(), weather);
+                    wp.getLongitude(), wp.getLatitude(), bucketTime);
+            Map<String, Object> evaluated = calculator.evaluate(rulesJson, weather);
             FlyabilityLevel level = FlyabilityLevel.valueOf(String.valueOf(evaluated.get("level")));
             aggregate = FlyabilityLevel.max(aggregate, level);
             Map<String, Object> seg = new LinkedHashMap<>();
@@ -132,14 +136,41 @@ public class FlyabilityService {
             seg.put("factorResults", evaluated.get("factorResults"));
             segmentResults.add(seg);
         }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("level", aggregate.name());
+        result.put("segments", segmentResults);
+        return result;
+    }
+
+    private Map<String, Object> buildRouteCell(String routeId, String routeVersionId,
+                                               List<RouteWaypoint> waypoints, OffsetDateTime bucket,
+                                               FlyabilityRuleSet ruleSet, String ruleVersion) {
+        LocalDateTime bucketLocal = bucket.atZoneSameInstant(TimeBucketUtil.ZONE).toLocalDateTime();
+        OsiRouteCache cached = osiRouteCacheMapper.selectOne(new LambdaQueryWrapper<OsiRouteCache>()
+                .eq(OsiRouteCache::getRouteId, routeId)
+                .eq(OsiRouteCache::getRouteVersionId, routeVersionId)
+                .eq(OsiRouteCache::getBucketTime, bucketLocal)
+                .last("LIMIT 1"));
+
         Map<String, Object> cell = new LinkedHashMap<>();
         cell.put("routeId", routeId);
         cell.put("routeVersionId", routeVersionId);
         cell.put("bucketTime", bucket);
-        cell.put("level", aggregate.name());
+
+        if (cached != null) {
+            cell.put("level", cached.getLevel());
+            cell.put("ruleVersion", cached.getRuleVersion());
+            cell.put("isStale", false);
+            cell.put("segments", parseJsonList(cached.getFactorResultsJson()));
+            return cell;
+        }
+
+        Map<String, Object> evaluated = evaluateRouteAtBucket(
+                waypoints, bucketLocal, ruleSet.getRulesJson());
+        cell.put("level", evaluated.get("level"));
         cell.put("ruleVersion", ruleVersion);
         cell.put("isStale", true);
-        cell.put("segments", segmentResults);
+        cell.put("segments", evaluated.get("segments"));
         return cell;
     }
 
@@ -162,7 +193,8 @@ public class FlyabilityService {
             return cell;
         }
 
-        Map<String, Object> weather = weatherService.buildFlyabilityWeatherMap(point.getLandingPointId());
+        Map<String, Object> weather = weatherService.buildFlyabilityWeatherMap(
+                point.getLandingPointId(), bucketTime);
         Map<String, Object> evaluated = calculator.evaluate(ruleSet.getRulesJson(), weather);
         cell.putAll(evaluated);
         cell.put("ruleVersion", ruleVersion);

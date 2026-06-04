@@ -40,9 +40,8 @@ public class WindFieldController {
                     entity.getEast(), entity.getNorth());
         }
 
-        Map<String, Object> data = windFieldService.getWindField(targetBounds);
+        Map<String, Object> data = windFieldService.getWindField(targetBounds, heightM);
         data.put("regionId", regionId);
-        data.put("heightM", heightM);
         data.put("bucketTime", TimeBucketUtil.toBucket(TimeBucketUtil.parseOrNow(time)));
         data.put("isStale", true);
         return Result.success(data);

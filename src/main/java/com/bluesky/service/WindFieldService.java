@@ -55,9 +55,9 @@ public class WindFieldService {
     @Value("${wind.field.bounds.north:37.0}")
     private double defaultNorth;
 
-    public Map<String, Object> getWindField(String boundsParam) {
+    public Map<String, Object> getWindField(String boundsParam, int heightM) {
         Bounds bounds = parseBounds(boundsParam);
-        List<Integer> targetHeights = parseHeights();
+        int targetHeight = resolveHeightM(heightM);
 
         WindSourceFiles sourceFiles = windDataSourceService.ensureSourceFiles();
         String uFile = sourceFiles.getUFile().toString();
@@ -88,45 +88,49 @@ public class WindFieldService {
             throw new BusinessException(ResultCode.SERVICE_UNAVAILABLE, "Failed to read axis from wind file: " + e.getMessage());
         }
 
-        List<WindLayer> layers = new ArrayList<>();
-        List<Map<String, Object>> layerSources = new ArrayList<>();
         int scale = Math.max(1, interpolationScale);
 
-        for (int height : targetHeights) {
-            Integer levelIndex = null;
-            Double matchedLevel = null;
-            if (levelAxis != null && levelAxis.length > 0) {
-                int idx = netcdfWindReader.resolveNearestLevelIndex(levelAxis, height);
-                levelIndex = idx;
-                matchedLevel = levelAxis[idx];
-            }
-
-            WindData windData = buildLayerData(uFile, vFile, timeIndex, levelIndex, bounds, latAxis, lonAxis, scale);
-            layers.add(new WindLayer(height, windData));
-
-            Map<String, Object> src = new HashMap<>();
-            src.put("height", height);
-            src.put("levelIndex", levelIndex);
-            src.put("matchedLevel", matchedLevel);
-            src.put("uFile", sourceFiles.getUFile().toAbsolutePath().normalize().toString());
-            src.put("vFile", sourceFiles.getVFile().toAbsolutePath().normalize().toString());
-            layerSources.add(src);
+        Integer levelIndex = null;
+        Double matchedLevel = null;
+        if (levelAxis != null && levelAxis.length > 0) {
+            int idx = netcdfWindReader.resolveNearestLevelIndex(levelAxis, targetHeight);
+            levelIndex = idx;
+            matchedLevel = levelAxis[idx];
         }
+
+        WindData windData = buildLayerData(uFile, vFile, timeIndex, levelIndex, bounds, latAxis, lonAxis, scale);
+        WindLayer layer = new WindLayer(targetHeight, windData);
+
+        Map<String, Object> layerSource = new HashMap<>();
+        layerSource.put("height", targetHeight);
+        layerSource.put("levelIndex", levelIndex);
+        layerSource.put("matchedLevel", matchedLevel);
+        layerSource.put("uFile", sourceFiles.getUFile().toAbsolutePath().normalize().toString());
+        layerSource.put("vFile", sourceFiles.getVFile().toAbsolutePath().normalize().toString());
 
         Map<String, Object> source = new HashMap<>();
         source.put("timeIndex", timeIndex);
         source.put("updateTime", dataTime == null ? null : dataTime.format(OUTPUT_TIME_FORMATTER));
-        source.put("layers", layerSources);
+        source.put("layer", layerSource);
 
         Map<String, Object> result = new HashMap<>();
         result.put("time", dataTime == null ? null : dataTime.format(OUTPUT_TIME_FORMATTER));
         result.put("timeIndex", timeIndex);
         result.put("bounds", bounds);
-        result.put("heights", targetHeights);
-        result.put("layers", layers);
+        result.put("heightM", targetHeight);
+        result.put("height", targetHeight);
+        result.put("windData", windData);
+        result.put("layers", List.of(layer));
         result.put("source", source);
         result.put("dataType", "real");
         return result;
+    }
+
+    private int resolveHeightM(int heightM) {
+        if (heightM <= 0) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "heightM must be positive");
+        }
+        return heightM;
     }
 
     private WindData buildLayerData(

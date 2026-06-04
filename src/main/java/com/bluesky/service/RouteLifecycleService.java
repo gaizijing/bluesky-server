@@ -48,6 +48,14 @@ public class RouteLifecycleService {
         return result;
     }
 
+    public List<Route> listRoutesByRegion(String regionId) {
+        regionService.assertRegionAccess(regionId);
+        return routeMapper.selectList(new LambdaQueryWrapper<Route>()
+                .eq(Route::getRegionId, regionId)
+                .eq(Route::getDeleted, 0)
+                .orderByDesc(Route::getCreatedAt));
+    }
+
     public List<RouteVersion> listVersions(String routeId) {
         Route route = requireRoute(routeId);
         regionService.assertRegionAccess(route.getRegionId());

@@ -20,14 +20,14 @@ public class FlyabilityCalculator {
         FlyabilityLevel aggregate = FlyabilityLevel.GREEN;
 
         aggregate = FlyabilityLevel.max(aggregate, evaluateRangeFactor(factorResults, "windSpeedMs", "风速",
-                doubleVal(weather.get("windSpeed")), rules.get("windSpeedMs")));
+                doubleVal(weather.get("windSpeed")), rules.get("windSpeedMs"), ThresholdDirection.HIGHER_WORSE));
         aggregate = FlyabilityLevel.max(aggregate, evaluateRangeFactor(factorResults, "visibilityKm", "能见度",
-                doubleVal(weather.get("visibility")), rules.get("visibilityKm")));
+                doubleVal(weather.get("visibility")), rules.get("visibilityKm"), ThresholdDirection.LOWER_WORSE));
         aggregate = FlyabilityLevel.max(aggregate, evaluateRangeFactor(factorResults, "precipMmH", "降水",
-                doubleVal(weather.get("precipitation")), rules.get("precipMmH")));
+                doubleVal(weather.get("precipitation")), rules.get("precipMmH"), ThresholdDirection.HIGHER_WORSE));
         aggregate = FlyabilityLevel.max(aggregate, evaluateTempFactor(factorResults, doubleVal(weather.get("temperature")), rules.get("temperatureC")));
         aggregate = FlyabilityLevel.max(aggregate, evaluateRangeFactor(factorResults, "cloudBaseM", "云底高度",
-                doubleVal(weather.get("cloudBase")), rules.get("cloudBaseM")));
+                doubleVal(weather.get("cloudBase")), rules.get("cloudBaseM"), ThresholdDirection.LOWER_WORSE));
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("level", aggregate.name());
@@ -35,9 +35,16 @@ public class FlyabilityCalculator {
         return result;
     }
 
+    private enum ThresholdDirection {
+        /** 数值越大越危险，如风速、降水 */
+        HIGHER_WORSE,
+        /** 数值越小越危险，如能见度、云底高度 */
+        LOWER_WORSE
+    }
+
     @SuppressWarnings("unchecked")
     private FlyabilityLevel evaluateRangeFactor(List<Map<String, Object>> out, String key, String label,
-                                                double value, Object ruleObj) {
+                                                double value, Object ruleObj, ThresholdDirection direction) {
         Map<String, Object> factor = new LinkedHashMap<>();
         factor.put("factor", key);
         factor.put("label", label);
@@ -46,10 +53,18 @@ public class FlyabilityCalculator {
         if (ruleObj instanceof Map<?, ?> rule) {
             double yellow = doubleVal(rule.get("yellow"));
             double red = doubleVal(rule.get("red"));
-            if (value >= red && red > 0) {
-                level = FlyabilityLevel.RED;
-            } else if (value >= yellow && yellow > 0) {
-                level = FlyabilityLevel.YELLOW;
+            if (direction == ThresholdDirection.HIGHER_WORSE) {
+                if (value >= red && red > 0) {
+                    level = FlyabilityLevel.RED;
+                } else if (value >= yellow && yellow > 0) {
+                    level = FlyabilityLevel.YELLOW;
+                }
+            } else {
+                if (red > 0 && value <= red) {
+                    level = FlyabilityLevel.RED;
+                } else if (yellow > 0 && value <= yellow) {
+                    level = FlyabilityLevel.YELLOW;
+                }
             }
             factor.put("thresholdYellow", yellow);
             factor.put("thresholdRed", red);

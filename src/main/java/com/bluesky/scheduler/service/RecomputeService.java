@@ -14,6 +14,7 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 @Slf4j
@@ -33,8 +34,7 @@ public class RecomputeService {
         }
         LocalDateTime toBucket = TimeBucketUtil.currentBucketLocal();
         int bucketCount = Math.max(1, properties.getRecomputeBuckets());
-        LocalDateTime fromBucket = toBucket.minusMinutes((long) (bucketCount - 1) * TimeBucketUtil.BUCKET_MINUTES);
-        List<LocalDateTime> buckets = TimeBucketUtil.bucketsBetween(fromBucket, toBucket);
+        List<LocalDateTime> buckets = forwardBucketsFrom(toBucket, bucketCount);
 
         List<Region> regions = resolveRegions(event.getRegionId());
         log.info("规则发布重算 ruleType={} ruleSetId={} regions={} buckets={}",
@@ -71,5 +71,14 @@ public class RecomputeService {
             return List.of(regionService.getEntity(regionId));
         }
         return regionService.listEnabled();
+    }
+
+    /** 从起始桶向未来展开，供适飞矩阵预报缓存预写 */
+    private List<LocalDateTime> forwardBucketsFrom(LocalDateTime startBucket, int count) {
+        List<LocalDateTime> buckets = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            buckets.add(startBucket.plusMinutes((long) i * TimeBucketUtil.BUCKET_MINUTES));
+        }
+        return buckets;
     }
 }

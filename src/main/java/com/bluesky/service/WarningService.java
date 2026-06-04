@@ -24,7 +24,7 @@ public class WarningService {
     private final WarningHandleRecordMapper handleRecordMapper;
     private final RegionService regionService;
 
-    public List<Map<String, Object>> list(String regionId, String types, String statuses) {
+    public List<Map<String, Object>> list(String regionId, String types, String statuses, Integer limit) {
         regionService.assertRegionAccess(regionId);
         LambdaQueryWrapper<WarningRecord> wrapper = new LambdaQueryWrapper<WarningRecord>()
                 .eq(WarningRecord::getDisplayRegionId, regionId)
@@ -34,6 +34,9 @@ public class WarningService {
         }
         if (statuses != null && !statuses.isBlank()) {
             wrapper.in(WarningRecord::getStatus, Arrays.asList(statuses.split(",")));
+        }
+        if (limit != null && limit > 0) {
+            wrapper.last("LIMIT " + Math.min(limit, 100));
         }
         return warningRecordMapper.selectList(wrapper).stream().map(this::toMap).toList();
     }
@@ -54,8 +57,8 @@ public class WarningService {
         WarningRecord record = require(warningId);
         regionService.assertRegionAccess(record.getDisplayRegionId());
         WarningStatus current = WarningStatus.parse(record.getStatus());
-        if (current != WarningStatus.NEW && current != WarningStatus.ACKNOWLEDGED) {
-            throw new BusinessException(ResultCode.BAD_REQUEST, "当前状态不可处理: " + record.getStatus());
+        if (current != WarningStatus.ACKNOWLEDGED) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "请先阅读预警后再处理，当前: " + record.getStatus());
         }
         record.setStatus(WarningStatus.HANDLED.name());
         record.setUpdatedAt(LocalDateTime.now());

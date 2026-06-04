@@ -22,8 +22,9 @@ public class WarningController {
     public Result<List<Map<String, Object>>> list(
             @RequestParam String regionId,
             @RequestParam(required = false) String types,
-            @RequestParam(required = false) String statuses) {
-        return Result.success(warningService.list(regionId, types, statuses));
+            @RequestParam(required = false) String statuses,
+            @RequestParam(required = false) Integer limit) {
+        return Result.success(warningService.list(regionId, types, statuses, limit));
     }
 
     @GetMapping("/{warningId}")
@@ -32,7 +33,7 @@ public class WarningController {
     }
 
     @PostMapping("/{warningId}/ack")
-    @Operation(summary = "确认预警 NEW → ACKNOWLEDGED")
+    @Operation(summary = "标记已读 NEW → ACKNOWLEDGED")
     public Result<Map<String, Object>> ack(
             @PathVariable String warningId,
             @RequestParam(required = false) String remark) {

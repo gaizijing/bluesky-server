@@ -10,6 +10,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 
 @Slf4j
@@ -33,6 +34,11 @@ public class GridCacheJob {
                 try {
                     Map<String, Object> grid = gridSampler.sample(
                             region, rows, cols, product, properties.getGridSampleIntervalMs());
+                    if (!hasAnyValue(grid)) {
+                        log.warn("格点缓存跳过（和风无有效 value）region={} bucket={} height={} product={}",
+                                regionId, bucketTime, heightM, product);
+                        continue;
+                    }
                     gridCacheService.upsert(regionId, bucketTime, heightM, product, grid, dataSourceTime);
                     log.info("格点缓存完成 region={} bucket={} height={} product={}",
                             regionId, bucketTime, heightM, product);
@@ -42,5 +48,19 @@ public class GridCacheJob {
                 }
             }
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private boolean hasAnyValue(Map<String, Object> grid) {
+        Object cells = grid.get("cells");
+        if (!(cells instanceof List<?> list)) {
+            return false;
+        }
+        for (Object item : list) {
+            if (item instanceof Map<?, ?> cell && cell.get("value") != null) {
+                return true;
+            }
+        }
+        return false;
     }
 }

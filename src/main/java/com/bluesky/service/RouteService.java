@@ -3,11 +3,11 @@ package com.bluesky.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.bluesky.common.ResultCode;
 import com.bluesky.entity.LandingPoint;
-import com.bluesky.entity.MicroscaleWeather;
+import com.bluesky.entity.RiskFieldCache;
 import com.bluesky.entity.Route;
 import com.bluesky.entity.RouteWaypoint;
 import com.bluesky.exception.BusinessException;
-import com.bluesky.mapper.MicroscaleWeatherMapper;
+import com.bluesky.mapper.RiskFieldCacheMapper;
 import com.bluesky.mapper.RouteMapper;
 import com.bluesky.util.TimeBucketUtil;
 import lombok.RequiredArgsConstructor;
@@ -28,9 +28,10 @@ public class RouteService {
 
     private final RouteMapper routeMapper;
     private final RouteLifecycleService routeLifecycleService;
-    private final MicroscaleWeatherMapper microscaleWeatherMapper;
+    private final RiskFieldCacheMapper riskFieldCacheMapper;
     private final LandingPointService landingPointService;
 
+    private static final int DEFAULT_RISK_HEIGHT_M = 100;
     private static final int SEGMENT_SAMPLE_COUNT = 7;
     private static final int PATH_POINT_COUNT = 10;
 
@@ -230,33 +231,11 @@ public class RouteService {
     }
 
     private GridSnapshot loadSnapshotInternal(LandingPoint point, LocalDateTime targetTime) {
-        LambdaQueryWrapper<MicroscaleWeather> latestQuery = new LambdaQueryWrapper<MicroscaleWeather>()
-                .eq(MicroscaleWeather::getPointId, point.getLandingPointId());
-        if (targetTime != null) {
-            latestQuery.le(MicroscaleWeather::getDataTime, targetTime);
-        }
-        latestQuery.orderByDesc(MicroscaleWeather::getDataTime).last("LIMIT 1");
-
-        MicroscaleWeather latest = microscaleWeatherMapper.selectOne(latestQuery);
-        if (latest == null || latest.getDataTime() == null) {
+        if (point.getRegionId() == null || point.getRegionId().isBlank()) {
             return null;
         }
-
-        List<MicroscaleWeather> rows = microscaleWeatherMapper.selectList(
-                new LambdaQueryWrapper<MicroscaleWeather>()
-                        .eq(MicroscaleWeather::getPointId, point.getLandingPointId())
-                        .eq(MicroscaleWeather::getDataTime, latest.getDataTime()));
-        if (rows == null || rows.isEmpty()) {
-            return null;
-        }
-
-        Integer gridSizeValue = rows.get(0).getGridSize();
-        int gridSize = gridSizeValue != null ? gridSizeValue : 0;
-        if (gridSize <= 1) {
-            return null;
-        }
-
-        if (point.getBboxMinLng() == null || point.getBboxMinLat() == null || point.getBboxMaxLng() == null || point.getBboxMaxLat() == null) {
+        if (point.getBboxMinLng() == null || point.getBboxMinLat() == null
+                || point.getBboxMaxLng() == null || point.getBboxMaxLat() == null) {
             return null;
         }
 
@@ -265,6 +244,21 @@ public class RouteService {
         double maxLng = point.getBboxMaxLng().doubleValue();
         double maxLat = point.getBboxMaxLat().doubleValue();
 
+        List<RiskFieldCache> rows = loadRiskFieldCells(
+                point.getRegionId(),
+                targetTime,
+                DEFAULT_RISK_HEIGHT_M,
+                minLng,
+                minLat,
+                maxLng,
+                maxLat);
+        if (rows == null || rows.isEmpty()) {
+            return null;
+        }
+
+        int gridSize = (int) Math.round(Math.sqrt(rows.size()));
+        gridSize = Math.max(2, Math.min(64, gridSize));
+
         double[][] risk = new double[gridSize][gridSize];
         double[][] windSpeed = new double[gridSize][gridSize];
         double[][] windShear = new double[gridSize][gridSize];
@@ -272,28 +266,53 @@ public class RouteService {
         String[][] reason = new String[gridSize][gridSize];
 
         double maxRiskValue = 0d;
-        for (MicroscaleWeather row : rows) {
-            if (row == null || row.getGridX() == null || row.getGridY() == null) {
+        for (RiskFieldCache row : rows) {
+            if (row == null || row.getLng() == null || row.getLat() == null || row.getValue() == null) {
                 continue;
             }
-            int gx = row.getGridX().intValue();
-            int gy = row.getGridY().intValue();
-            if (gx < 0 || gx >= gridSize || gy < 0 || gy >= gridSize) {
+            if (!(maxLng > minLng) || !(maxLat > minLat)) {
                 continue;
             }
 
-            double riskValue = row.getRiskLevel() != null ? row.getRiskLevel().doubleValue() : 0d;
-            risk[gx][gy] = riskValue;
+            double gx = (row.getLng() - minLng) / (maxLng - minLng) * (gridSize - 1d);
+            double gy = (row.getLat() - minLat) / (maxLat - minLat) * (gridSize - 1d);
+            int ix = (int) Math.round(clamp(gx, 0d, gridSize - 1d));
+            int iy = (int) Math.round(clamp(gy, 0d, gridSize - 1d));
+
+            double riskValue = row.getValue().doubleValue();
+            risk[ix][iy] = riskValue;
             maxRiskValue = Math.max(maxRiskValue, riskValue);
-
-            windSpeed[gx][gy] = row.getWindSpeed() != null ? row.getWindSpeed().doubleValue() : 0d;
-            windShear[gx][gy] = row.getWindShear() != null ? row.getWindShear().doubleValue() : 0d;
-            turbulence[gx][gy] = row.getTurbulence() != null ? row.getTurbulence().doubleValue() : 0d;
-            reason[gx][gy] = row.getReason();
+            reason[ix][iy] = row.getReason();
         }
 
         double riskScale = maxRiskValue <= 3.5d ? (1d / 3d) : (1d / 100d);
         return new GridSnapshot(gridSize, minLng, minLat, maxLng, maxLat, riskScale, risk, windSpeed, windShear, turbulence, reason);
+    }
+
+    private List<RiskFieldCache> loadRiskFieldCells(String regionId, LocalDateTime targetTime, int heightM,
+                                                    double west, double south, double east, double north) {
+        LambdaQueryWrapper<RiskFieldCache> latestWrapper = new LambdaQueryWrapper<RiskFieldCache>()
+                .eq(RiskFieldCache::getRegionId, regionId)
+                .eq(RiskFieldCache::getHeightM, heightM);
+        if (targetTime != null) {
+            latestWrapper.le(RiskFieldCache::getBucketTime, targetTime);
+        }
+        latestWrapper.orderByDesc(RiskFieldCache::getBucketTime).last("LIMIT 1");
+
+        RiskFieldCache latest = riskFieldCacheMapper.selectOne(latestWrapper);
+        if (latest == null || latest.getBucketTime() == null) {
+            return List.of();
+        }
+
+        return riskFieldCacheMapper.selectList(
+                new LambdaQueryWrapper<RiskFieldCache>()
+                        .eq(RiskFieldCache::getRegionId, regionId)
+                        .eq(RiskFieldCache::getBucketTime, latest.getBucketTime())
+                        .eq(RiskFieldCache::getHeightM, heightM)
+                        .ge(RiskFieldCache::getLng, west)
+                        .le(RiskFieldCache::getLng, east)
+                        .ge(RiskFieldCache::getLat, south)
+                        .le(RiskFieldCache::getLat, north));
     }
 
     private static double clamp(double value, double min, double max) {

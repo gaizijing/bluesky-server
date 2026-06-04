@@ -212,4 +212,4 @@ scheduler:
   warning-retention-days: 180
   ai-conclusion-retention-days: 30
   cleanup-batch-size: 10000
-  recompute-buckets: 4
+  recompute-buckets: 8
