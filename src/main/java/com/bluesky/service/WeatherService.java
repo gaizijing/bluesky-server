@@ -16,6 +16,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
+
+import java.net.URI;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
@@ -27,6 +30,8 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -49,6 +54,7 @@ public class WeatherService {
     private final AircraftLimitMapper aircraftLimitMapper;
     private final LandingPointService landingPointService;
     private final RegionService regionService;
+    private final RegionBoundaryService regionBoundaryService;
     private static final int CITYWIDE_MAX_SOURCE_POINTS = 15000;
     private static final int IDW_NEIGHBOR_LIMIT = 20;
     private static final double IDW_POWER = 2.0d;
@@ -230,6 +236,7 @@ public class WeatherService {
         flat.put("precipitation", sample.precipMmH());
         flat.put("temperature", sample.temperatureC());
         flat.put("cloudBase", estimateCloudBaseM(sample.weatherCode()));
+        enrichDerivedWeatherFactors(flat);
         return flat;
     }
 
@@ -287,11 +294,7 @@ public class WeatherService {
     }
 
     private List<ForecastSample> fetchOpenMeteoForecastSeries(double lng, double lat) {
-        String url = String.format(Locale.US,
-                "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f&timezone=Asia%%2FShanghai"
-                        + "&minutely_15=temperature_2m,wind_speed_10m,visibility,precipitation,weather_code&forecast_days=1",
-                lat, lng);
-        Map<String, Object> raw = callOpenMeteoAPI(url);
+        Map<String, Object> raw = callOpenMeteoAPI(buildOpenMeteoForecastUri(lat, lng));
         if (raw == null) {
             return List.of();
         }
@@ -430,7 +433,46 @@ public class WeatherService {
         flat.put("temperature", parseDouble(d.get("temp")));
         flat.put("humidity", parseDouble(d.get("humidity")));
         flat.put("cloudBase", 500d);
+        enrichDerivedWeatherFactors(flat, d);
         return flat;
+    }
+
+    /** 补充风切变、颠簸指数、湍流（和风 API 或预报字段 → 适飞计算用数值） */
+    private void enrichDerivedWeatherFactors(Map<String, Object> flat) {
+        enrichDerivedWeatherFactors(flat, flat);
+    }
+
+    private void enrichDerivedWeatherFactors(Map<String, Object> flat, Map<String, Object> source) {
+        double windMs = doubleVal(flat.get("windSpeed"));
+        double visKm = doubleVal(flat.get("visibility"));
+        flat.put("windShearMs", estimateWindShearMs(windMs, source.get("windShearLevel")));
+
+        double turbIdx = parseDouble(source.get("turbulenceIndex"));
+        if (turbIdx <= 0d && (windMs > 0d || visKm > 0d)) {
+            turbIdx = calculateTurbulenceIndex(windMs * 3.6, visKm);
+        }
+        flat.put("turbulenceIndex", turbIdx);
+        flat.put("turbulence", estimateTurbulence(turbIdx, windMs));
+    }
+
+    private double estimateWindShearMs(double windSpeedMs, Object levelObj) {
+        if (levelObj != null) {
+            String level = String.valueOf(levelObj).trim().toLowerCase(Locale.ROOT);
+            if ("high".equals(level)) return 5d;
+            if ("medium".equals(level)) return 3d;
+            if ("low".equals(level)) return 1d;
+        }
+        return Math.min(5d, Math.max(0.5d, windSpeedMs * 0.2d));
+    }
+
+    private double estimateTurbulence(double turbulenceIndex, double windSpeedMs) {
+        double windComponent = Math.min(1d, windSpeedMs / 15d) * 0.3d;
+        double value = turbulenceIndex * 0.7d + windComponent;
+        return Math.round(Math.min(1d, Math.max(0d, value)) * 100d) / 100d;
+    }
+
+    private double doubleVal(Object value) {
+        return parseDouble(value);
     }
 
     private double parseDouble(Object value) {
@@ -452,14 +494,15 @@ public class WeatherService {
                 ? region
                 : regionService.getDefault().getRegionId();
         var regionEntity = regionService.getEntity(regionId);
+        var envelope = regionBoundaryService.resolveEnvelope(regionEntity);
         List<RiskFieldCache> cells = loadRiskFieldCells(
                 regionId,
                 targetTime,
                 DEFAULT_RISK_HEIGHT_M,
-                regionEntity.getWest(),
-                regionEntity.getSouth(),
-                regionEntity.getEast(),
-                regionEntity.getNorth());
+                envelope.west(),
+                envelope.south(),
+                envelope.east(),
+                envelope.north());
 
         Map<String, Object> result = new HashMap<>();
         result.put("updateTime", LocalDateTime.now().toString());
@@ -1381,14 +1424,7 @@ public class WeatherService {
                 double longitude = point.getLongitude().doubleValue();
 
                 // 3. 数据库没有今天的预报数据，调用 Open-Meteo API
-                // 构建 Open-Meteo API 请求参数
-                String url = "https://api.open-meteo.com/v1/forecast";
-                String params = String.format(
-                        "?latitude=%.2f&longitude=%.2f&minutely_15=temperature_2m,wind_speed_10m,visibility,precipitation,weather_code&forecast_days=1",
-                        latitude, longitude);
-
-                // 调用 API
-                weatherData = callOpenMeteoAPI(url + params);
+                weatherData = callOpenMeteoAPI(buildOpenMeteoForecastUri(latitude, longitude));
 
                 try {
                     saveForecastDataToDatabase(pointId, weatherData);
@@ -1424,26 +1460,31 @@ public class WeatherService {
     }
 
     /**
-     * 过滤出从当前时间开始的3小时数据，每30分钟一个数据点
+     * 过滤出从当前 15 分钟档开始的 3 小时预报（上海时区，含 time_iso 供前端对齐）
      */
     private Map<String, Object> filterNext3HoursData(Map<String, Object> weatherData) {
-        Map<String, Object> filteredData = new HashMap<>();
+        Map<String, Object> filteredData = new LinkedHashMap<>();
 
-        // 获取所有数据列表
-        List<String> allTimes = (List<String>) weatherData.get("time");
-        List<Double> allTemperatures = (List<Double>) weatherData.get("temperature_2m");
-        List<Double> allPrecipitation = (List<Double>) weatherData.get("precipitation");
-        List<Double> allWindSpeed = (List<Double>) weatherData.get("wind_speed_10m");
-        List<Integer> allVisibility = (List<Integer>) weatherData.get("visibility");
-        List<Integer> allWeatherCode = (List<Integer>) weatherData.get("weather_code");
-        List<String> allWeatherText = (List<String>) weatherData.get("weather_text");
+        List<String> allTimes = castStringList(weatherData.get("time"));
+        List<String> allTimeIso = castStringList(weatherData.get("time_iso"));
+        List<Double> allTemperatures = castDoubleList(weatherData.get("temperature_2m"));
+        List<Double> allPrecipitation = castDoubleList(weatherData.get("precipitation"));
+        List<Double> allWindSpeed = castDoubleList(weatherData.get("wind_speed_10m"));
+        List<Integer> allVisibility = castIntegerList(weatherData.get("visibility"));
+        List<Integer> allWeatherCode = castIntegerList(weatherData.get("weather_code"));
+        List<String> allWeatherText = castStringList(weatherData.get("weather_text"));
 
         if (allTimes == null || allTimes.isEmpty()) {
             return filteredData;
         }
 
-        // 过滤后的数据列表
+        ZoneId zone = TimeBucketUtil.ZONE;
+        ZonedDateTime now = ZonedDateTime.now(zone);
+        ZonedDateTime windowStart = floorTo15Minutes(now);
+        ZonedDateTime windowEnd = now.plusHours(3);
+
         List<String> filteredTimes = new ArrayList<>();
+        List<String> filteredTimeIso = new ArrayList<>();
         List<Double> filteredTemperatures = new ArrayList<>();
         List<Double> filteredPrecipitation = new ArrayList<>();
         List<Double> filteredWindSpeed = new ArrayList<>();
@@ -1451,115 +1492,167 @@ public class WeatherService {
         List<Integer> filteredWeatherCode = new ArrayList<>();
         List<String> filteredWeatherText = new ArrayList<>();
 
-        // 获取当前时间
-        LocalTime now = LocalTime.now();
-        int currentHour = now.getHour();
-        int currentMinute = now.getMinute();
-
-        // 计算当前时间的分钟数（从0点开始）
-        int currentMinutes = currentHour * 60 + currentMinute;
-        // 计算3小时后的分钟数
-        int endMinutes = currentMinutes + 3 * 60;
-
-        // 遍历所有时间点
         for (int i = 0; i < allTimes.size(); i++) {
-            String timeStr = allTimes.get(i);
-            String[] parts = timeStr.split(":");
-            if (parts.length != 2) {
+            ZonedDateTime pointTime = parseForecastPointTime(allTimes.get(i), allTimeIso, i, zone);
+            if (pointTime == null) {
+                continue;
+            }
+            if (pointTime.isBefore(windowStart) || pointTime.isAfter(windowEnd)) {
+                continue;
+            }
+            if (pointTime.getMinute() % 15 != 0) {
                 continue;
             }
 
-            int hour = Integer.parseInt(parts[0]);
-            int minute = Integer.parseInt(parts[1]);
-            int minutesFromMidnight = hour * 60 + minute;
-
-            // 检查是否在当前时间到3小时后之间
-            if (minutesFromMidnight >= currentMinutes && minutesFromMidnight <= endMinutes) {
-                // 检查是否是30分钟的倍数（0, 30分钟）
-                if (minute == 0 || minute == 30) {
-                    filteredTimes.add(timeStr);
-                    if (allTemperatures != null && i < allTemperatures.size()) {
-                        filteredTemperatures.add(allTemperatures.get(i));
-                    }
-                    if (allPrecipitation != null && i < allPrecipitation.size()) {
-                        filteredPrecipitation.add(allPrecipitation.get(i));
-                    }
-                    if (allWindSpeed != null && i < allWindSpeed.size()) {
-                        filteredWindSpeed.add(allWindSpeed.get(i));
-                    }
-                    if (allVisibility != null && i < allVisibility.size()) {
-                        filteredVisibility.add(allVisibility.get(i));
-                    }
-                    if (allWeatherCode != null && i < allWeatherCode.size()) {
-                        filteredWeatherCode.add(allWeatherCode.get(i));
-                    }
-                    if (allWeatherText != null && i < allWeatherText.size()) {
-                        filteredWeatherText.add(allWeatherText.get(i));
-                    }
-
-                }
+            filteredTimes.add(formatHm(pointTime));
+            filteredTimeIso.add(pointTime.toOffsetDateTime().toString());
+            appendForecastValue(allTemperatures, i, filteredTemperatures, 0d);
+            appendForecastValue(allPrecipitation, i, filteredPrecipitation, 0d);
+            appendForecastValue(allWindSpeed, i, filteredWindSpeed, 0d);
+            appendForecastValue(allVisibility, i, filteredVisibility, 0);
+            appendForecastValue(allWeatherCode, i, filteredWeatherCode, 0);
+            if (allWeatherText != null && i < allWeatherText.size()) {
+                filteredWeatherText.add(allWeatherText.get(i));
             }
         }
 
-        // 确保至少有6个数据点
-        if (filteredTimes.size() < 6 && !allTimes.isEmpty()) {
-            // 如果数据不足，从所有数据中选择最近的6个30分钟间隔的点
-            for (int i = 0; i < allTimes.size() && filteredTimes.size() < 6; i++) {
-                String timeStr = allTimes.get(i);
-                String[] parts = timeStr.split(":");
-                if (parts.length != 2) {
-                    continue;
-                }
+        prependNowPointIfNeeded(
+                filteredTimes, filteredTimeIso, filteredTemperatures, filteredPrecipitation,
+                filteredWindSpeed, filteredVisibility, filteredWeatherCode, filteredWeatherText, now);
 
-                int minute = Integer.parseInt(parts[1]);
-                if (minute == 0 || minute == 30) {
-                    // 检查是否已经添加
-                    if (!filteredTimes.contains(timeStr)) {
-                        filteredTimes.add(timeStr);
-                        if (allTemperatures != null && i < allTemperatures.size()) {
-                            filteredTemperatures.add(allTemperatures.get(i));
-                        }
-                        if (allPrecipitation != null && i < allPrecipitation.size()) {
-                            filteredPrecipitation.add(allPrecipitation.get(i));
-                        }
-                        if (allWindSpeed != null && i < allWindSpeed.size()) {
-                            filteredWindSpeed.add(allWindSpeed.get(i));
-                        }
-                        if (allVisibility != null && i < allVisibility.size()) {
-                            filteredVisibility.add(allVisibility.get(i));
-                        }
-                        if (allWeatherCode != null && i < allWeatherCode.size()) {
-                            filteredWeatherCode.add(allWeatherCode.get(i));
-                        }
-                        if (allWeatherText != null && i < allWeatherText.size()) {
-                            filteredWeatherText.add(allWeatherText.get(i));
-                        }
-
-                    }
-                }
-            }
-        }
-
-        // 填充过滤后的数据
         filteredData.put("time", filteredTimes);
+        filteredData.put("time_iso", filteredTimeIso);
         filteredData.put("temperature_2m", filteredTemperatures);
         filteredData.put("precipitation", filteredPrecipitation);
         filteredData.put("wind_speed_10m", filteredWindSpeed);
         filteredData.put("visibility", filteredVisibility);
         filteredData.put("weather_code", filteredWeatherCode);
         filteredData.put("weather_text", filteredWeatherText);
-
         return filteredData;
+    }
+
+    private ZonedDateTime floorTo15Minutes(ZonedDateTime time) {
+        int flooredMinute = (time.getMinute() / TimeBucketUtil.BUCKET_MINUTES) * TimeBucketUtil.BUCKET_MINUTES;
+        return time.withMinute(flooredMinute).withSecond(0).withNano(0);
+    }
+
+    private ZonedDateTime parseForecastPointTime(String hm, List<String> isoList, int index, ZoneId zone) {
+        if (isoList != null && index < isoList.size() && isoList.get(index) != null && !isoList.get(index).isBlank()) {
+            try {
+                String raw = isoList.get(index).trim().replace(' ', '+');
+                if (raw.contains("+") || raw.endsWith("Z")) {
+                    return OffsetDateTime.parse(raw).atZoneSameInstant(zone);
+                }
+                return LocalDateTime.parse(raw).atZone(zone);
+            } catch (Exception ignored) {
+                // fallback to HH:mm
+            }
+        }
+        if (hm == null || !hm.contains(":")) {
+            return null;
+        }
+        String[] parts = hm.split(":");
+        if (parts.length != 2) {
+            return null;
+        }
+        LocalDate date = LocalDate.now(zone);
+        return ZonedDateTime.of(
+                date,
+                LocalTime.of(Integer.parseInt(parts[0]), Integer.parseInt(parts[1])),
+                zone);
+    }
+
+    private String formatHm(ZonedDateTime time) {
+        return String.format("%02d:%02d", time.getHour(), time.getMinute());
+    }
+
+    private void prependNowPointIfNeeded(List<String> times,
+                                         List<String> timeIso,
+                                         List<Double> temperatures,
+                                         List<Double> precipitations,
+                                         List<Double> windSpeeds,
+                                         List<Integer> visibilities,
+                                         List<Integer> weatherCodes,
+                                         List<String> weatherTexts,
+                                         ZonedDateTime now) {
+        if (times.isEmpty()) {
+            return;
+        }
+        ZonedDateTime first;
+        try {
+            first = OffsetDateTime.parse(timeIso.get(0)).atZoneSameInstant(now.getZone());
+        } catch (Exception ex) {
+            return;
+        }
+        if (!first.isAfter(now)) {
+            return;
+        }
+        times.add(0, formatHm(now));
+        timeIso.add(0, now.toOffsetDateTime().toString());
+        temperatures.add(0, temperatures.get(0));
+        precipitations.add(0, precipitations.get(0));
+        windSpeeds.add(0, windSpeeds.get(0));
+        visibilities.add(0, visibilities.get(0));
+        weatherCodes.add(0, weatherCodes.get(0));
+        if (!weatherTexts.isEmpty()) {
+            weatherTexts.add(0, weatherTexts.get(0));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> castStringList(Object value) {
+        if (value instanceof List<?> list) {
+            return (List<String>) list;
+        }
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Double> castDoubleList(Object value) {
+        if (value instanceof List<?> list) {
+            return (List<Double>) list;
+        }
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Integer> castIntegerList(Object value) {
+        if (value instanceof List<?> list) {
+            return (List<Integer>) list;
+        }
+        return null;
+    }
+
+    private <T> void appendForecastValue(List<T> source, int index, List<T> target, T fallback) {
+        if (source != null && index < source.size() && source.get(index) != null) {
+            target.add(source.get(index));
+        } else {
+            target.add(fallback);
+        }
+    }
+
+    /**
+     * 构建 Open-Meteo 15 分钟预报请求 URI（与 V1 一致，不传 timezone，使用 API 默认 GMT）
+     */
+    private URI buildOpenMeteoForecastUri(double lat, double lng) {
+        return UriComponentsBuilder.fromHttpUrl("https://api.open-meteo.com/v1/forecast")
+                .queryParam("latitude", lat)
+                .queryParam("longitude", lng)
+                .queryParam("timezone", TimeBucketUtil.ZONE.getId())
+                .queryParam("minutely_15", "temperature_2m,wind_speed_10m,visibility,precipitation,weather_code")
+                .queryParam("forecast_days", 1)
+                .build()
+                .encode()
+                .toUri();
     }
 
     /**
      * 调用 Open-Meteo API
      */
-    private Map<String, Object> callOpenMeteoAPI(String apiUrl) {
+    private Map<String, Object> callOpenMeteoAPI(URI apiUri) {
         RestTemplate restTemplate = new RestTemplate();
         try {
-            // 调用 Open-Meteo API
-            ResponseEntity<String> responseEntity = restTemplate.getForEntity(apiUrl, String.class);
+            ResponseEntity<String> responseEntity = restTemplate.getForEntity(apiUri, String.class);
             if (responseEntity.getStatusCode().is2xxSuccessful()) {
                 String responseBody = responseEntity.getBody();
                 if (responseBody != null) {
@@ -1599,7 +1692,8 @@ public class WeatherService {
                     ArrayNode windArray = (ArrayNode) minutely15Object.get("wind_speed_10m");
                     List<Double> windSpeed = new ArrayList<>();
                     for (int i = 0; i < windArray.size(); i++) {
-                        windSpeed.add(windArray.get(i).asDouble());
+                        // Open-Meteo 风速为 km/h，折线图展示 m/s
+                        windSpeed.add(windArray.get(i).asDouble() / 3.6d);
                     }
 
                     // 处理能见度数据（从米转换为公里）
@@ -1653,9 +1747,12 @@ public class WeatherService {
         List<Integer> weatherCode = new ArrayList<>();
         List<String> weatherText = new ArrayList<>();
 
+        List<String> timeIso = new ArrayList<>();
+
         for (WeatherForecast forecast : forecasts) {
             LocalDateTime forecastTime = forecast.getForecastTime();
             times.add(String.format("%02d:%02d", forecastTime.getHour(), forecastTime.getMinute()));
+            timeIso.add(forecastTime.atZone(TimeBucketUtil.ZONE).toOffsetDateTime().toString());
             temperature.add(forecast.getTemperature() != null ? forecast.getTemperature().doubleValue() : 0.0);
             precipitation.add(forecast.getPrecipitation() != null ? forecast.getPrecipitation().doubleValue() : 0.0);
             windSpeed.add(forecast.getWindSpeed() != null ? forecast.getWindSpeed().doubleValue() : 0.0);
@@ -1665,6 +1762,7 @@ public class WeatherService {
         }
 
         minutely15.put("time", times);
+        minutely15.put("time_iso", timeIso);
         minutely15.put("temperature_2m", temperature);
         minutely15.put("precipitation", precipitation);
         minutely15.put("wind_speed_10m", windSpeed);
@@ -1786,9 +1884,10 @@ public class WeatherService {
 
     public Map<String, Object> getCitywideHeatmap() {
         Region region = regionService.getEntity(regionService.getDefault().getRegionId());
+        var envelope = regionBoundaryService.resolveEnvelope(region);
         String citywideBounds = String.format("[%s,%s,%s,%s]",
-                region.getWest(), region.getSouth(),
-                region.getEast(), region.getNorth());
+                envelope.west(), envelope.south(),
+                envelope.east(), envelope.north());
 
         List<Map<String, Object>> sourcePoints = generateCommonHeatmapData(citywideBounds, null, null);
         double[] bbox = parseBoundingBox(citywideBounds);

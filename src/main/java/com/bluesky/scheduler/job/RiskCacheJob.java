@@ -6,6 +6,7 @@ import com.bluesky.entity.RiskFieldCache;
 import com.bluesky.entity.RiskRuleSet;
 import com.bluesky.mapper.RiskFieldCacheMapper;
 import com.bluesky.scheduler.config.SchedulerProperties;
+import com.bluesky.service.RegionBoundaryService;
 import com.bluesky.service.RegionService;
 import com.bluesky.service.RiskRuleSetService;
 import com.bluesky.service.WeatherService;
@@ -25,6 +26,7 @@ import java.util.Map;
 public class RiskCacheJob {
 
     private final RegionService regionService;
+    private final RegionBoundaryService regionBoundaryService;
     private final RiskRuleSetService ruleSetService;
     private final WeatherService weatherService;
     private final RiskFieldCacheMapper riskFieldCacheMapper;
@@ -32,15 +34,16 @@ public class RiskCacheJob {
 
     public void run(String regionId, LocalDateTime bucketTime) {
         Region region = regionService.getEntity(regionId);
+        var envelope = regionBoundaryService.resolveEnvelope(region);
         RiskRuleSet ruleSet = ruleSetService.getPublished();
         String ruleVersion = ruleSet.getRuleSetId() + "-v" + ruleSet.getVersionNo();
 
         int rows = properties.getGridRows();
         int cols = properties.getGridCols();
-        double west = region.getWest();
-        double east = region.getEast();
-        double south = region.getSouth();
-        double north = region.getNorth();
+        double west = envelope.west();
+        double east = envelope.east();
+        double south = envelope.south();
+        double north = envelope.north();
 
         for (Integer heightM : properties.getHeights()) {
             riskFieldCacheMapper.delete(new LambdaQueryWrapper<RiskFieldCache>()

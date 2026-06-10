@@ -75,4 +75,11 @@ public class RouteController {
         routeLifecycleService.deleteByRegion(regionId);
         return Result.success();
     }
+
+    @Operation(summary = "删除单条航路")
+    @DeleteMapping("/{routeId}")
+    public Result<Void> deleteRoute(@PathVariable String routeId) {
+        routeLifecycleService.deleteRoute(routeId);
+        return Result.success();
+    }
 }

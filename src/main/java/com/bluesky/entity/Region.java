@@ -21,10 +21,8 @@ public class Region implements Serializable {
     private String name;
     private Double centerLng;
     private Double centerLat;
-    private Double west;
-    private Double east;
-    private Double south;
-    private Double north;
+    private String boundaryUrl;
+    private String adcode;
     @TableField(typeHandler = JsonbStringTypeHandler.class)
     private String mapLiftJson;
     private String modelUrl;

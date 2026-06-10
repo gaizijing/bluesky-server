@@ -12,12 +12,10 @@ public class RegionVO {
     private Boolean isDefault;
     private String modelUrl;
     private RegionMapLiftVO mapLift;
-    private Double west;
-    private Double east;
-    private Double south;
-    private Double north;
     private Double centerLng;
     private Double centerLat;
+    private String boundaryUrl;
+    private String adcode;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

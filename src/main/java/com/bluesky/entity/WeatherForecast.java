@@ -1,5 +1,7 @@
 package com.bluesky.entity;
 
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 import java.math.BigDecimal;
@@ -16,6 +18,7 @@ public class WeatherForecast {
     /**
      * 主键ID
      */
+    @TableId(type = IdType.AUTO)
     private Long id;
     
     /**

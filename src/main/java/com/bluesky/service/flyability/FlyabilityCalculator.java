@@ -21,6 +21,12 @@ public class FlyabilityCalculator {
 
         aggregate = FlyabilityLevel.max(aggregate, evaluateRangeFactor(factorResults, "windSpeedMs", "风速",
                 doubleVal(weather.get("windSpeed")), rules.get("windSpeedMs"), ThresholdDirection.HIGHER_WORSE));
+        aggregate = FlyabilityLevel.max(aggregate, evaluateRangeFactor(factorResults, "windShearMs", "风切变",
+                doubleVal(weather.get("windShearMs")), rules.get("windShearMs"), ThresholdDirection.HIGHER_WORSE));
+        aggregate = FlyabilityLevel.max(aggregate, evaluateRangeFactor(factorResults, "turbulenceIndex", "颠簸指数",
+                doubleVal(weather.get("turbulenceIndex")), rules.get("turbulenceIndex"), ThresholdDirection.HIGHER_WORSE));
+        aggregate = FlyabilityLevel.max(aggregate, evaluateRangeFactor(factorResults, "turbulence", "湍流",
+                doubleVal(weather.get("turbulence")), rules.get("turbulence"), ThresholdDirection.HIGHER_WORSE));
         aggregate = FlyabilityLevel.max(aggregate, evaluateRangeFactor(factorResults, "visibilityKm", "能见度",
                 doubleVal(weather.get("visibility")), rules.get("visibilityKm"), ThresholdDirection.LOWER_WORSE));
         aggregate = FlyabilityLevel.max(aggregate, evaluateRangeFactor(factorResults, "precipMmH", "降水",

@@ -1,7 +1,9 @@
 package com.bluesky.scheduler.client;
 
 import com.bluesky.entity.Region;
+import com.bluesky.service.RegionBoundaryService;
 import com.bluesky.service.WeatherService;
+import com.bluesky.util.GeoJsonEnvelope;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -18,12 +20,14 @@ import java.util.Map;
 public class RegionGridSampler {
 
     private final WeatherService weatherService;
+    private final RegionBoundaryService regionBoundaryService;
 
     public Map<String, Object> sample(Region region, int rows, int cols, String product, long intervalMs) {
-        double west = region.getWest();
-        double east = region.getEast();
-        double south = region.getSouth();
-        double north = region.getNorth();
+        GeoJsonEnvelope.Envelope envelope = regionBoundaryService.resolveEnvelope(region);
+        double west = envelope.west();
+        double east = envelope.east();
+        double south = envelope.south();
+        double north = envelope.north();
         int safeRows = Math.max(2, rows);
         int safeCols = Math.max(2, cols);
 

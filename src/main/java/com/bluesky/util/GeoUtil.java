@@ -83,4 +83,51 @@ public final class GeoUtil {
         }
         return Double.parseDouble(String.valueOf(value));
     }
+
+    /**
+     * 从 GeoJSON 根对象、Feature 或 FeatureCollection 首要素读取 properties。
+     */
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> extractGeoJsonProperties(Map<String, Object> geoJson) {
+        if (geoJson == null || geoJson.isEmpty()) {
+            return Map.of();
+        }
+
+        Object props = geoJson.get("properties");
+        if (props instanceof Map<?, ?> map) {
+            return (Map<String, Object>) map;
+        }
+
+        String type = String.valueOf(geoJson.getOrDefault("type", ""));
+        if ("FeatureCollection".equals(type)) {
+            Object featuresObj = geoJson.get("features");
+            if (featuresObj instanceof List<?> features && !features.isEmpty()) {
+                Object first = features.get(0);
+                if (first instanceof Map<?, ?> featureMap) {
+                    Object featureProps = ((Map<String, Object>) featureMap).get("properties");
+                    if (featureProps instanceof Map<?, ?> featurePropsMap) {
+                        return (Map<String, Object>) featurePropsMap;
+                    }
+                }
+            }
+        }
+        return Map.of();
+    }
+
+    /**
+     * 解析 properties.altitudes（或与 coordinates 等长的高度数组），长度须与坐标点数一致。
+     */
+    public static List<Double> parseAltitudesList(Object raw) {
+        if (!(raw instanceof List<?> list) || list.isEmpty()) {
+            return null;
+        }
+        List<Double> altitudes = new ArrayList<>(list.size());
+        for (Object item : list) {
+            if (item == null) {
+                throw new BusinessException(ResultCode.BAD_REQUEST, "properties.altitudes 不能含空值");
+            }
+            altitudes.add(toDouble(item));
+        }
+        return altitudes;
+    }
 }

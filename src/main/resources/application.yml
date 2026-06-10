@@ -168,6 +168,10 @@ region:
     east: 118.1  # 改为目标地区的东边界经度
     south: 39.1  # 改为目标地区的南边界纬度
     north: 39.5  # 改为目标地区的北边界纬度
+  boundary:
+    storage-dir: ../web/public/cesium/shp
+    public-url-prefix: /cesium/shp
+    datav-template: https://geo.datav.aliyun.com/areas_v3/bound/{adcode}.json
 # 日志配置
 logging:
   level:

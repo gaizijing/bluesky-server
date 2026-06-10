@@ -128,6 +128,7 @@ public class RouteLifecycleService {
         String endName = String.valueOf(routeData.getOrDefault("endName", "终点"));
         double flightHeight = parseDoubleObj(routeData.get("flightHeight"), 300d);
         double distance = GeoUtil.pathLengthKm(coordinates);
+        List<Double> altitudes = extractAltitudes(routeData, coordinates.size());
 
         Route route = new Route();
         route.setRegionId(regionId);
@@ -148,7 +149,7 @@ public class RouteLifecycleService {
         version.setRouteVersionId(versionId);
         version.setRouteId(route.getId());
         version.setVersionNo(1);
-        version.setCruiseHeightM(flightHeight);
+        version.setCruiseHeightM(resolveCruiseHeightM(flightHeight, altitudes));
         version.setDistanceM(distance);
         version.setWaypointCount(coordinates.size());
         version.setStatus("ACTIVE");
@@ -158,7 +159,8 @@ public class RouteLifecycleService {
         for (int i = 0; i < coordinates.size(); i++) {
             double[] point = coordinates.get(i);
             String name = waypointName(i, coordinates.size(), startName, endName);
-            insertWaypoint(route.getId(), versionId, i + 1, name, point[0], point[1], flightHeight);
+            double alt = resolveWaypointAltitude(i, flightHeight, altitudes);
+            insertWaypoint(route.getId(), versionId, i + 1, name, point[0], point[1], alt);
         }
 
         route.setCurrentVersionId(versionId);
@@ -175,10 +177,24 @@ public class RouteLifecycleService {
     @Transactional
     public Map<String, Object> importGeoJson(String regionId, Map<String, Object> geoJson) {
         List<double[]> coordinates = GeoUtil.parseLineCoordinates(geoJson);
+        Map<String, Object> properties = GeoUtil.extractGeoJsonProperties(geoJson);
+
+        double flightHeight = parseDoubleObj(
+                firstNonNull(properties.get("flightHeight"), geoJson.get("flightHeight")),
+                300d);
+        List<Double> altitudes = resolveGeoJsonAltitudes(geoJson, properties, coordinates.size());
+
+        String defaultName = "导入航路-" + System.currentTimeMillis();
+        String name = String.valueOf(firstNonNull(properties.get("name"), geoJson.get("name"), defaultName));
+
         Map<String, Object> routeData = new LinkedHashMap<>();
-        routeData.put("name", geoJson.getOrDefault("name", "导入航路-" + System.currentTimeMillis()));
-        routeData.put("startName", "起点");
-        routeData.put("endName", "终点");
+        routeData.put("name", name);
+        routeData.put("startName", String.valueOf(properties.getOrDefault("startName", "起点")));
+        routeData.put("endName", String.valueOf(properties.getOrDefault("endName", "终点")));
+        routeData.put("flightHeight", flightHeight);
+        if (altitudes != null) {
+            routeData.put("altitudes", altitudes);
+        }
         routeData.put("startLon", coordinates.get(0)[0]);
         routeData.put("startLat", coordinates.get(0)[1]);
         routeData.put("endLon", coordinates.get(coordinates.size() - 1)[0]);
@@ -190,6 +206,10 @@ public class RouteLifecycleService {
                 wp.put("name", "途经点" + i);
                 wp.put("longitude", coordinates.get(i)[0]);
                 wp.put("latitude", coordinates.get(i)[1]);
+                if (altitudes != null && i < altitudes.size()) {
+                    wp.put("height", altitudes.get(i));
+                    wp.put("altitude", altitudes.get(i));
+                }
                 waypoints.add(wp);
             }
             routeData.put("waypoints", waypoints);
@@ -204,6 +224,13 @@ public class RouteLifecycleService {
         for (Route route : routes) {
             routeMapper.deleteById(route.getId());
         }
+    }
+
+    @Transactional
+    public void deleteRoute(String routeId) {
+        Route route = requireRoute(routeId);
+        regionService.assertRegionAccess(route.getRegionId());
+        routeMapper.deleteById(routeId);
     }
 
     private Route requireRoute(String routeId) {
@@ -307,5 +334,56 @@ public class RouteLifecycleService {
             return defaultValue;
         }
         return Double.parseDouble(String.valueOf(value));
+    }
+
+    private List<Double> extractAltitudes(Map<String, Object> routeData, int pointCount) {
+        List<Double> altitudes = GeoUtil.parseAltitudesList(routeData.get("altitudes"));
+        if (altitudes == null) {
+            return null;
+        }
+        assertAltitudesLength(altitudes.size(), pointCount);
+        return altitudes;
+    }
+
+    private List<Double> resolveGeoJsonAltitudes(Map<String, Object> geoJson,
+                                                 Map<String, Object> properties,
+                                                 int pointCount) {
+        List<Double> altitudes = GeoUtil.parseAltitudesList(
+                firstNonNull(properties.get("altitudes"), geoJson.get("altitudes")));
+        if (altitudes == null) {
+            return null;
+        }
+        assertAltitudesLength(altitudes.size(), pointCount);
+        return altitudes;
+    }
+
+    private void assertAltitudesLength(int altCount, int pointCount) {
+        if (altCount != pointCount) {
+            throw new BusinessException(ResultCode.BAD_REQUEST,
+                    "properties.altitudes 长度(" + altCount + ")须与坐标点数(" + pointCount + ")一致");
+        }
+    }
+
+    private double resolveCruiseHeightM(double flightHeight, List<Double> altitudes) {
+        if (altitudes == null || altitudes.isEmpty()) {
+            return flightHeight;
+        }
+        return altitudes.stream().mapToDouble(Double::doubleValue).max().orElse(flightHeight);
+    }
+
+    private double resolveWaypointAltitude(int index, double flightHeight, List<Double> altitudes) {
+        if (altitudes != null && index >= 0 && index < altitudes.size()) {
+            return altitudes.get(index);
+        }
+        return flightHeight;
+    }
+
+    private Object firstNonNull(Object... values) {
+        for (Object value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
     }
 }

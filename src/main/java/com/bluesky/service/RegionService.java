@@ -16,6 +16,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -27,6 +28,7 @@ public class RegionService {
 
     private final RegionMapper regionMapper;
     private final ObjectMapper objectMapper;
+    private final RegionBoundaryService regionBoundaryService;
 
     public List<RegionVO> listForCurrentUser() {
         LoginUser user = SecurityUtils.requireUser();
@@ -71,9 +73,21 @@ public class RegionService {
 
     @Transactional
     public RegionVO create(RegionRequest request) {
+        if (!hasBoundarySource(request)) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "请提供行政区划 adcode 或 GeoJSON 下载地址");
+        }
+
         Region region = new Region();
         region.setRegionId(generateRegionId());
-        applyRequest(region, request);
+        applyBasicFields(region, request, true);
+
+        RegionBoundaryService.BoundaryImportResult boundary =
+                regionBoundaryService.importBoundary(
+                        region.getRegionId(),
+                        request.getAdcode(),
+                        request.getBoundarySourceUrl());
+        applyBoundaryResult(region, boundary);
+
         region.setCreatedAt(LocalDateTime.now());
         region.setUpdatedAt(LocalDateTime.now());
         if (Boolean.TRUE.equals(request.getIsDefault())) {
@@ -86,7 +100,17 @@ public class RegionService {
     @Transactional
     public RegionVO update(String regionId, RegionRequest request) {
         Region region = requireRegion(regionId);
-        applyRequest(region, request);
+        applyBasicFields(region, request, false);
+
+        if (hasBoundarySource(request)) {
+            RegionBoundaryService.BoundaryImportResult boundary =
+                    regionBoundaryService.importBoundary(
+                            regionId,
+                            request.getAdcode(),
+                            request.getBoundarySourceUrl());
+            applyBoundaryResult(region, boundary);
+        }
+
         region.setUpdatedAt(LocalDateTime.now());
         if (Boolean.TRUE.equals(request.getIsDefault())) {
             regionMapper.setDefaultRegion(regionId);
@@ -116,6 +140,7 @@ public class RegionService {
             throw new BusinessException(ResultCode.BAD_REQUEST, "不能删除默认 Region");
         }
         regionMapper.deleteById(regionId);
+        regionBoundaryService.deleteBoundaryFile(regionId);
     }
 
     public void assertRegionAccess(String regionId) {
@@ -141,19 +166,24 @@ public class RegionService {
         return region;
     }
 
-    private void applyRequest(Region region, RegionRequest request) {
+    private boolean hasBoundarySource(RegionRequest request) {
+        return StringUtils.hasText(request.getAdcode())
+                || StringUtils.hasText(request.getBoundarySourceUrl());
+    }
+
+    private void applyBasicFields(Region region, RegionRequest request, boolean isCreate) {
         region.setName(request.getName());
-        region.setWest(request.getWest());
-        region.setEast(request.getEast());
-        region.setSouth(request.getSouth());
-        region.setNorth(request.getNorth());
-        double west = request.getWest() != null ? request.getWest() : region.getWest();
-        double east = request.getEast() != null ? request.getEast() : region.getEast();
-        double south = request.getSouth() != null ? request.getSouth() : region.getSouth();
-        double north = request.getNorth() != null ? request.getNorth() : region.getNorth();
-        region.setCenterLng(request.getCenterLng() != null ? request.getCenterLng() : (west + east) / 2);
-        region.setCenterLat(request.getCenterLat() != null ? request.getCenterLat() : (south + north) / 2);
-        region.setModelUrl(request.getModelUrl());
+        if (request.getCenterLng() != null) {
+            region.setCenterLng(request.getCenterLng());
+        } else if (isCreate) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "请提供中心点经度 centerLng");
+        }
+        if (request.getCenterLat() != null) {
+            region.setCenterLat(request.getCenterLat());
+        } else if (isCreate) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "请提供中心点纬度 centerLat");
+        }
+        region.setModelUrl(StringUtils.hasText(request.getModelUrl()) ? request.getModelUrl().trim() : null);
         if (request.getEnabled() != null) {
             region.setEnabled(request.getEnabled());
         } else if (region.getEnabled() == null) {
@@ -168,7 +198,29 @@ public class RegionService {
             } catch (JsonProcessingException e) {
                 throw new BusinessException(ResultCode.BAD_REQUEST, "mapLift 格式错误");
             }
+        } else if (isCreate) {
+            syncMapLiftFromCenter(region);
         }
+    }
+
+    private void syncMapLiftFromCenter(Region region) {
+        try {
+            RegionMapLiftVO lift = new RegionMapLiftVO();
+            lift.setLongitude(region.getCenterLng());
+            lift.setLatitude(region.getCenterLat());
+            lift.setHeight(52000d);
+            lift.setPitch(-40d);
+            lift.setHeading(0d);
+            lift.setTerrainExaggeration(1.2d);
+            region.setMapLiftJson(objectMapper.writeValueAsString(lift));
+        } catch (JsonProcessingException ignored) {
+            // ignore
+        }
+    }
+
+    private void applyBoundaryResult(Region region, RegionBoundaryService.BoundaryImportResult boundary) {
+        region.setBoundaryUrl(boundary.boundaryUrl());
+        region.setAdcode(boundary.adcode());
     }
 
     private String generateRegionId() {
@@ -183,12 +235,10 @@ public class RegionService {
         vo.setEnabled(region.getEnabled());
         vo.setIsDefault(region.getIsDefault());
         vo.setModelUrl(region.getModelUrl());
-        vo.setWest(region.getWest());
-        vo.setEast(region.getEast());
-        vo.setSouth(region.getSouth());
-        vo.setNorth(region.getNorth());
         vo.setCenterLng(region.getCenterLng());
         vo.setCenterLat(region.getCenterLat());
+        vo.setBoundaryUrl(region.getBoundaryUrl());
+        vo.setAdcode(region.getAdcode());
         vo.setCreatedAt(region.getCreatedAt());
         vo.setUpdatedAt(region.getUpdatedAt());
         if (region.getMapLiftJson() != null) {
@@ -198,8 +248,8 @@ public class RegionService {
                 RegionMapLiftVO lift = new RegionMapLiftVO();
                 lift.setLongitude(region.getCenterLng());
                 lift.setLatitude(region.getCenterLat());
-                lift.setHeight(120000d);
-                lift.setPitch(-45d);
+                lift.setHeight(52000d);
+                lift.setPitch(-40d);
                 vo.setMapLift(lift);
             }
         }

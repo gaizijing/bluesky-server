@@ -2,8 +2,10 @@ package com.bluesky.controller;
 
 import com.bluesky.common.Result;
 import com.bluesky.entity.Region;
+import com.bluesky.service.RegionBoundaryService;
 import com.bluesky.service.RegionService;
 import com.bluesky.service.WindFieldService;
+import com.bluesky.util.GeoJsonEnvelope;
 import com.bluesky.util.TimeBucketUtil;
 import com.bluesky.vo.RegionVO;
 import lombok.RequiredArgsConstructor;
@@ -21,6 +23,7 @@ public class WindFieldController {
 
     private final WindFieldService windFieldService;
     private final RegionService regionService;
+    private final RegionBoundaryService regionBoundaryService;
 
     @GetMapping
     public Result<Map<String, Object>> getWindField(
@@ -35,9 +38,10 @@ public class WindFieldController {
                     ? regionService.getById(regionId)
                     : regionService.getDefault();
             Region entity = regionService.getEntity(regionVo.getRegionId());
+            GeoJsonEnvelope.Envelope envelope = regionBoundaryService.resolveEnvelope(entity);
             targetBounds = String.format("[%s,%s,%s,%s]",
-                    entity.getWest(), entity.getSouth(),
-                    entity.getEast(), entity.getNorth());
+                    envelope.west(), envelope.south(),
+                    envelope.east(), envelope.north());
         }
 
         Map<String, Object> data = windFieldService.getWindField(targetBounds, heightM);
