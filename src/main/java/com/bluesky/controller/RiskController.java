@@ -9,7 +9,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
 
-@Tag(name = "R_met 风险")
+@Tag(name = "风险")
 @RestController
 @RequestMapping("/risk")
 @RequiredArgsConstructor

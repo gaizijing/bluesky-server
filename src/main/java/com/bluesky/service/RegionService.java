@@ -200,6 +200,8 @@ public class RegionService {
             }
         } else if (isCreate) {
             syncMapLiftFromCenter(region);
+        } else if (request.getCenterLng() != null || request.getCenterLat() != null) {
+            syncMapLiftCenterFromRegion(region);
         }
     }
 
@@ -215,6 +217,28 @@ public class RegionService {
             region.setMapLiftJson(objectMapper.writeValueAsString(lift));
         } catch (JsonProcessingException ignored) {
             // ignore
+        }
+    }
+
+    /** 更新中心点时同步 mapLift 经纬度，保留原有高度/俯仰等视角参数 */
+    private void syncMapLiftCenterFromRegion(Region region) {
+        if (region.getCenterLng() == null || region.getCenterLat() == null) {
+            return;
+        }
+        try {
+            RegionMapLiftVO lift = null;
+            if (region.getMapLiftJson() != null) {
+                lift = objectMapper.readValue(region.getMapLiftJson(), RegionMapLiftVO.class);
+            }
+            if (lift == null) {
+                syncMapLiftFromCenter(region);
+                return;
+            }
+            lift.setLongitude(region.getCenterLng());
+            lift.setLatitude(region.getCenterLat());
+            region.setMapLiftJson(objectMapper.writeValueAsString(lift));
+        } catch (JsonProcessingException ignored) {
+            syncMapLiftFromCenter(region);
         }
     }
 
