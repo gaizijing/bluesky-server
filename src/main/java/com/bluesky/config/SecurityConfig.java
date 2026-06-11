@@ -42,6 +42,8 @@ public class SecurityConfig {
                                 "/webjars/**",
                                 "/favicon.ico")
                         .permitAll()
+                        // ISIM 位置流：Jakarta WebSocket 握手无法携带 axios 拦截器注入的 JWT
+                        .requestMatchers("/ws/isim-data").permitAll()
                         .anyRequest().authenticated())
                 .exceptionHandling(ex -> ex
                         .authenticationEntryPoint(authenticationEntryPoint)

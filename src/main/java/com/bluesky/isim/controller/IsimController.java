@@ -143,8 +143,8 @@ public class IsimController {
 
         try {
             String host = (String) targetRequest.get("host");
-            Integer sendPort = (Integer) targetRequest.get("sendPort");
-            Integer receivePort = (Integer) targetRequest.get("receivePort");
+            Integer sendPort = toInteger(targetRequest.get("sendPort"));
+            Integer receivePort = toInteger(targetRequest.get("receivePort"));
             
             // 可选：位置参数（安全转换，支持 Integer 和 Double）
             Double longitude = toDouble(targetRequest.get("longitude"));
@@ -248,6 +248,23 @@ public class IsimController {
         }
         if (value instanceof Number) {
             return ((Number) value).doubleValue();
+        }
+        return null;
+    }
+
+    private Integer toInteger(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number) {
+            return ((Number) value).intValue();
+        }
+        if (value instanceof String str && !str.isBlank()) {
+            try {
+                return Integer.parseInt(str.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
         }
         return null;
     }

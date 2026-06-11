@@ -32,6 +32,7 @@ public class WeatherDataService {
             LandingPoint point = landingPointService.getEntity(pointId);
             WeatherData weatherData = new WeatherData();
             weatherData.setWindSpeed(BigDecimal.valueOf(doubleVal(snapshot.get("windSpeed"))));
+            weatherData.setWindDirection(BigDecimal.valueOf(doubleVal(snapshot.get("windDirection"))));
             weatherData.setTemperature(BigDecimal.valueOf(doubleVal(snapshot.get("temperature"))));
             weatherData.setHumidity(BigDecimal.valueOf(doubleVal(snapshot.get("humidity"))));
             weatherData.setVisibility(BigDecimal.valueOf(doubleVal(snapshot.get("visibility"))));

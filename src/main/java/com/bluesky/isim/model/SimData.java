@@ -5,7 +5,7 @@ import java.time.LocalDateTime;
 
 /**
  * ISIM模拟机数据模型
- * 对应C++ UE5VisualUnit.cpp发送的数据格式
+ * 对应 ISIM UDP 数据：WeatherBridge 9 段短格式 / UE5VisualUnit 长格式
  */
 @Data
 public class SimData {
@@ -19,7 +19,10 @@ public class SimData {
     private double aircraftLon;      // 飞机重心经度
     private double aircraftLat;      // 飞机重心纬度
     private double aircraftAlt;      // 飞机重心高度（海拔，米）
-    
+    private double groundSpeed;      // 地速（m/s）
+    private double verticalSpeed;    // 垂直速度/真爬升率（m/s，向上为正）
+    private double batteryPercent;   // 电量百分比 0-100（WeatherBridge 第 9 段）
+
     // 眼点位置（飞行员视角）
     private double eyeLon;           // 眼点经度
     private double eyeLat;           // 眼点纬度

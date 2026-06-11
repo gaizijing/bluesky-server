@@ -427,7 +427,9 @@ public class WeatherService {
         Map<String, Object> d = extractWeatherDataMap(apiResult.get("data"));
         double windKmh = parseDouble(d.get("windSpeed"));
         flat.put("windSpeed", windKmh > 0 ? windKmh / 3.6 : 0d);
-        flat.put("windDirection", d.get("windDir"));
+        // 风向用 wind360（0–360°）；windDir 为和风文字描述（如「东北风」），不可 parse 成数字
+        flat.put("windDirection", parseDouble(d.get("wind360")));
+        flat.put("windDirText", d.get("windDir"));
         flat.put("visibility", parseDouble(d.get("vis")));
         flat.put("precipitation", parseDouble(d.get("precip")));
         flat.put("temperature", parseDouble(d.get("temp")));

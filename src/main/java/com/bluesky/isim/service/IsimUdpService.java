@@ -2,6 +2,7 @@ package com.bluesky.isim.service;
 
 import com.bluesky.isim.config.IsimConfig;
 import com.bluesky.isim.model.SimData;
+import com.bluesky.isim.util.WindFrameUtil;
 import com.bluesky.service.WindFieldService;
 import lombok.extern.slf4j.Slf4j;
 
@@ -166,11 +167,14 @@ public class IsimUdpService {
             double u = windData.getOrDefault("u", 0.0);
             double v = windData.getOrDefault("v", 0.0);
             double w = 0.0;
+            double heading = simData.getAircraftHeading();
+            double[] body = WindFrameUtil.enuToBody(u, v, w, heading);
 
-            sendBodyWind(u, v, w);
-            lastSendTime.set(System.currentTimeMillis()); // 更新发送时间戳
+            sendBodyWind(body[0], body[1], body[2]);
+            lastSendTime.set(System.currentTimeMillis());
 
-            log.info("已发送风场数据到ISIM：LON={}, LAT={}, U={}, V={}, W={} m/s", lon, lat, u, v, w);
+            log.info("已发送风场到ISIM：LON={}, LAT={}, U={}, V={}, HDG={}, bodyX={}, bodyY={}, bodyZ={}",
+                    lon, lat, u, v, heading, body[0], body[1], body[2]);
 
         } catch (Exception e) {
             log.error("发送风场数据失败", e);
@@ -190,27 +194,50 @@ public class IsimUdpService {
         String[] fields = rawData.split(";");
 
         try {
-            if (fields.length > 0) simData.setAircraftRoll(parseDouble(fields[0]));
-            if (fields.length > 1) simData.setAircraftPitch(parseDouble(fields[1]));
-            if (fields.length > 2) simData.setAircraftHeading(parseDouble(fields[2]));
-            if (fields.length > 3) simData.setAircraftLon(parseDouble(fields[3]));
-            if (fields.length > 4) simData.setAircraftLat(parseDouble(fields[4]));
-            if (fields.length > 5) simData.setAircraftAlt(parseDouble(fields[5]));
+            if (fields.length == 8) {
+                // WeatherBridge 旧短格式：roll;pitch;heading;lon;lat;alt;groundSpeed;verticalSpeed
+                simData.setAircraftRoll(parseDouble(fields[0]));
+                simData.setAircraftPitch(parseDouble(fields[1]));
+                simData.setAircraftHeading(parseDouble(fields[2]));
+                simData.setAircraftLon(parseDouble(fields[3]));
+                simData.setAircraftLat(parseDouble(fields[4]));
+                simData.setAircraftAlt(parseDouble(fields[5]));
+                simData.setGroundSpeed(parseDouble(fields[6]));
+                simData.setVerticalSpeed(parseDouble(fields[7]));
+            } else if (fields.length >= 9 && fields.length < 17) {
+                // WeatherBridge 新短格式：...;groundSpeed;verticalSpeed;batteryPercent
+                simData.setAircraftRoll(parseDouble(fields[0]));
+                simData.setAircraftPitch(parseDouble(fields[1]));
+                simData.setAircraftHeading(parseDouble(fields[2]));
+                simData.setAircraftLon(parseDouble(fields[3]));
+                simData.setAircraftLat(parseDouble(fields[4]));
+                simData.setAircraftAlt(parseDouble(fields[5]));
+                simData.setGroundSpeed(parseDouble(fields[6]));
+                simData.setVerticalSpeed(parseDouble(fields[7]));
+                simData.setBatteryPercent(parseDouble(fields[8]));
+            } else {
+                if (fields.length > 0) simData.setAircraftRoll(parseDouble(fields[0]));
+                if (fields.length > 1) simData.setAircraftPitch(parseDouble(fields[1]));
+                if (fields.length > 2) simData.setAircraftHeading(parseDouble(fields[2]));
+                if (fields.length > 3) simData.setAircraftLon(parseDouble(fields[3]));
+                if (fields.length > 4) simData.setAircraftLat(parseDouble(fields[4]));
+                if (fields.length > 5) simData.setAircraftAlt(parseDouble(fields[5]));
 
-            if (fields.length > 6) simData.setEyeLon(parseDouble(fields[6]));
-            if (fields.length > 7) simData.setEyeLat(parseDouble(fields[7]));
-            if (fields.length > 8) simData.setEyeAlt(parseDouble(fields[8]));
+                if (fields.length > 6) simData.setEyeLon(parseDouble(fields[6]));
+                if (fields.length > 7) simData.setEyeLat(parseDouble(fields[7]));
+                if (fields.length > 8) simData.setEyeAlt(parseDouble(fields[8]));
 
-            if (fields.length > 9) simData.setTrailHide(parseInt(fields[9]));
-            if (fields.length > 10) simData.setAirwayHide(parseInt(fields[10]));
+                if (fields.length > 9) simData.setTrailHide(parseInt(fields[9]));
+                if (fields.length > 10) simData.setAirwayHide(parseInt(fields[10]));
 
-            if (fields.length > 11) simData.setObserveLon(parseDouble(fields[11]));
-            if (fields.length > 12) simData.setObserveLat(parseDouble(fields[12]));
-            if (fields.length > 13) simData.setObserveAlt(parseDouble(fields[13]));
-            if (fields.length > 14) simData.setObservePitch(parseDouble(fields[14]));
-            if (fields.length > 15) simData.setObserveHeading(parseDouble(fields[15]));
+                if (fields.length > 11) simData.setObserveLon(parseDouble(fields[11]));
+                if (fields.length > 12) simData.setObserveLat(parseDouble(fields[12]));
+                if (fields.length > 13) simData.setObserveAlt(parseDouble(fields[13]));
+                if (fields.length > 14) simData.setObservePitch(parseDouble(fields[14]));
+                if (fields.length > 15) simData.setObserveHeading(parseDouble(fields[15]));
 
-            if (fields.length > 16) simData.setOwnshipLight(parseInt(fields[16]));
+                if (fields.length > 16) simData.setOwnshipLight(parseInt(fields[16]));
+            }
 
         } catch (Exception e) {
             log.error("解析ISIM数据失败", e);

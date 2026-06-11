@@ -1,6 +1,7 @@
 package com.bluesky.isim.service;
 
 import com.bluesky.isim.model.SimData;
+import com.bluesky.isim.util.WindFrameUtil;
 import com.bluesky.service.WindFieldService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.websocket.*;
@@ -133,9 +134,10 @@ public class IsimWebSocketServer {
                 double u = windData.getOrDefault("u", 0.0);
                 double v = windData.getOrDefault("v", 0.0);
                 double w = 0.0;
-                
-                // 发送风场数据给ISIM
-                isimUdpService.sendBodyWind(u, v, w);
+                double hdg = heading != null ? heading : 0.0;
+                double[] body = WindFrameUtil.enuToBody(u, v, w, hdg);
+
+                isimUdpService.sendBodyWind(body[0], body[1], body[2]);
                 
                 // 回复前端
                 webSocketService.sendMessage(session, 
