@@ -43,6 +43,37 @@ public class SimSessionController {
         return Result.success(simSessionService.updateStatus(sessionId, status));
     }
 
+    @PutMapping("/{sessionId}/route")
+    @Operation(summary = "绑定航路")
+    public Result<Map<String, Object>> bindRoute(
+            @PathVariable String sessionId,
+            @RequestParam String routeId) {
+        return Result.success(simSessionService.bindRoute(sessionId, routeId));
+    }
+
+    @PostMapping("/{sessionId}/connect")
+    @Operation(summary = "连接 ISIM（封装 update-target）")
+    public Result<Map<String, Object>> connect(
+            @PathVariable String sessionId,
+            @RequestBody Map<String, Object> body) {
+        return Result.success(simSessionService.connect(sessionId, body));
+    }
+
+    @PostMapping("/{sessionId}/disconnect")
+    @Operation(summary = "断开 ISIM 连接")
+    public Result<Map<String, Object>> disconnect(@PathVariable String sessionId) {
+        return Result.success(simSessionService.disconnect(sessionId));
+    }
+
+    @PostMapping("/{sessionId}/control")
+    @Operation(summary = "控制风场推送 START_SENDING / STOP_SENDING")
+    public Result<Map<String, Object>> control(
+            @PathVariable String sessionId,
+            @RequestBody Map<String, Object> body) {
+        String command = body != null ? String.valueOf(body.get("command")) : null;
+        return Result.success(simSessionService.control(sessionId, command));
+    }
+
     @PostMapping("/{sessionId}/close")
     public Result<Map<String, Object>> close(@PathVariable String sessionId) {
         simSessionService.close(sessionId);
