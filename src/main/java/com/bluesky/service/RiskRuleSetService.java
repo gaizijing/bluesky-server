@@ -3,6 +3,7 @@ package com.bluesky.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.bluesky.common.ResultCode;
 import com.bluesky.dto.RuleSetRequest;
+import com.bluesky.entity.FlyabilityRuleSet;
 import com.bluesky.entity.RiskRuleSet;
 import com.bluesky.enums.RuleSetStatus;
 import com.bluesky.exception.BusinessException;
@@ -16,6 +17,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,6 +30,7 @@ public class RiskRuleSetService {
     private final RiskRuleSetMapper mapper;
     private final ObjectMapper objectMapper;
     private final RulePublishNotifier rulePublishNotifier;
+    private final FlyabilityRuleSetService flyabilityRuleSetService;
 
     public List<Map<String, Object>> list() {
         return mapper.selectList(new LambdaQueryWrapper<RiskRuleSet>()
@@ -99,7 +102,51 @@ public class RiskRuleSetService {
 
     private void applyRequest(RiskRuleSet entity, RuleSetRequest request) {
         entity.setName(request.getName());
-        entity.setRulesJson(toJson(request.getRules()));
+        entity.setRulesJson(toJson(normalizeRules(request.getRules())));
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> normalizeRules(Map<String, Object> rules) {
+        if (rules == null || rules.isEmpty()) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "rules 不能为空");
+        }
+        Object factorsRaw = rules.get("factors");
+        if (!(factorsRaw instanceof List<?> factorList) || factorList.isEmpty()) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "factors 不能为空");
+        }
+        List<Map<String, Object>> normalizedFactors = new ArrayList<>();
+        for (Object item : factorList) {
+            if (!(item instanceof Map<?, ?> factor)) {
+                continue;
+            }
+            String name = factor.get("name") == null ? null : String.valueOf(factor.get("name")).trim();
+            if (name == null || name.isBlank()) {
+                throw new BusinessException(ResultCode.BAD_REQUEST, "每个 factor 须包含 name");
+            }
+            Object weightObj = factor.get("weight");
+            if (weightObj == null) {
+                throw new BusinessException(ResultCode.BAD_REQUEST, "每个 factor 须包含 weight");
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("name", name);
+            row.put("weight", weightObj);
+            normalizedFactors.add(row);
+        }
+        Map<String, Object> normalized = new LinkedHashMap<>();
+        normalized.put("factors", normalizedFactors);
+        normalized.put("outputCap", rules.getOrDefault("outputCap", 100));
+        return normalized;
+    }
+
+    private Map<String, Object> loadSharedThresholds() {
+        try {
+            FlyabilityRuleSet published = flyabilityRuleSetService.getPublished();
+            return objectMapper.readValue(published.getRulesJson(), Map.class);
+        } catch (BusinessException e) {
+            return Map.of();
+        } catch (JsonProcessingException e) {
+            return Map.of();
+        }
     }
 
     private String toJson(Map<String, Object> rules) {
@@ -127,6 +174,8 @@ public class RiskRuleSetService {
         } catch (JsonProcessingException e) {
             map.put("rules", entity.getRulesJson());
         }
+        map.put("sharedThresholdSource", "flyability");
+        map.put("sharedThresholds", loadSharedThresholds());
         map.put("createdAt", entity.getCreatedAt());
         map.put("updatedAt", entity.getUpdatedAt());
         return map;

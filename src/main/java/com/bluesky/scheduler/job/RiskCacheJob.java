@@ -1,15 +1,16 @@
 package com.bluesky.scheduler.job;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.bluesky.entity.FlyabilityRuleSet;
 import com.bluesky.entity.Region;
 import com.bluesky.entity.RiskFieldCache;
-import com.bluesky.entity.RiskRuleSet;
 import com.bluesky.mapper.RiskFieldCacheMapper;
 import com.bluesky.scheduler.config.SchedulerProperties;
+import com.bluesky.service.FlyabilityRuleSetService;
 import com.bluesky.service.RegionBoundaryService;
 import com.bluesky.service.RegionService;
-import com.bluesky.service.RiskRuleSetService;
 import com.bluesky.service.WeatherService;
+import com.bluesky.service.risk.RiskMetCalculator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -27,16 +28,17 @@ public class RiskCacheJob {
 
     private final RegionService regionService;
     private final RegionBoundaryService regionBoundaryService;
-    private final RiskRuleSetService ruleSetService;
+    private final FlyabilityRuleSetService flyabilityRuleSetService;
     private final WeatherService weatherService;
+    private final RiskMetCalculator riskMetCalculator;
     private final RiskFieldCacheMapper riskFieldCacheMapper;
     private final SchedulerProperties properties;
 
     public void run(String regionId, LocalDateTime bucketTime) {
         Region region = regionService.getEntity(regionId);
         var envelope = regionBoundaryService.resolveEnvelope(region);
-        RiskRuleSet ruleSet = ruleSetService.getPublished();
-        String ruleVersion = ruleSet.getRuleSetId() + "-v" + ruleSet.getVersionNo();
+        FlyabilityRuleSet flyabilityRuleSet = flyabilityRuleSetService.getPublished();
+        String ruleVersion = flyabilityRuleSet.getRuleSetId() + "-v" + flyabilityRuleSet.getVersionNo();
 
         int rows = properties.getGridRows();
         int cols = properties.getGridCols();
@@ -57,12 +59,10 @@ public class RiskCacheJob {
                 double lat = south + (north - south) * r / Math.max(1, rows - 1.0);
                 for (int c = 0; c < cols; c++) {
                     double lng = west + (east - west) * c / Math.max(1, cols - 1.0);
-                    Map<String, Object> raw = weatherService.getWeatherByCoordinates(lng, lat);
-                    Map<String, Object> weather = weatherService.flattenCoordinatesWeather(raw);
-                    double wind = doubleVal(weather.get("windSpeed"));
-                    double value = Math.min(100d, wind * 8d);
-                    String level = value >= 70 ? "HIGH" : value >= 40 ? "MEDIUM" : "LOW";
-                    String reason = wind >= 10 ? "风速偏大" : "综合风险一般";
+                    Map<String, Object> weather = weatherService.buildFlyabilityWeatherMap(lng, lat, bucketTime);
+                    Map<String, Object> evaluated = riskMetCalculator.evaluate(
+                            flyabilityRuleSet.getRulesJson(),
+                            weather);
 
                     RiskFieldCache cell = new RiskFieldCache();
                     cell.setRegionId(regionId);
@@ -70,9 +70,9 @@ public class RiskCacheJob {
                     cell.setHeightM(heightM);
                     cell.setLng(lng);
                     cell.setLat(lat);
-                    cell.setValue(BigDecimal.valueOf(value));
-                    cell.setLevel(level);
-                    cell.setReason(reason);
+                    cell.setValue(BigDecimal.valueOf(doubleVal(evaluated.get("value"))));
+                    cell.setLevel(String.valueOf(evaluated.get("level")));
+                    cell.setReason(String.valueOf(evaluated.get("reason")));
                     cell.setRuleVersion(ruleVersion);
                     cell.setComputedAt(now);
                     batch.add(cell);

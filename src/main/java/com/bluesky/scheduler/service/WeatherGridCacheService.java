@@ -55,7 +55,7 @@ public class WeatherGridCacheService {
     }
 
     /**
-     * 返回含有效 value 的格点缓存。调度任务可能写入全 null 的和风失败行，需跳过。
+     * 返回含有效 value 的格点缓存。调度任务可能写入全 null 的外部 API 失败行，需跳过。
      */
     public Optional<WeatherGridCache> findWithValidGrid(String regionId, LocalDateTime bucketTime,
                                                         int heightM, String product) {

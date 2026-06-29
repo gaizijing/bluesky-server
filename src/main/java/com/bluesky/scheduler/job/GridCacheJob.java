@@ -35,7 +35,7 @@ public class GridCacheJob {
                     Map<String, Object> grid = gridSampler.sample(
                             region, rows, cols, product, properties.getGridSampleIntervalMs());
                     if (!hasAnyValue(grid)) {
-                        log.warn("格点缓存跳过（和风无有效 value）region={} bucket={} height={} product={}",
+                        log.warn("格点缓存跳过（Open-Meteo 无有效 value）region={} bucket={} height={} product={}",
                                 regionId, bucketTime, heightM, product);
                         continue;
                     }

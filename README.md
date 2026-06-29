@@ -39,7 +39,7 @@ server/
 ├── src/main/
 │   ├── resources/
 │   │   ├── application.yml          # 数据库、JWT、风场、ISIM、调度
-│   │   └── db/migration/            # Flyway 迁移（V1~V24）
+│   │   └── db/migration/            # Flyway 迁移（V1 建表 + V2 示例数据）
 │   └── java/com/bluesky/
 │       ├── controller/              # REST 控制器（24+）
 │       ├── service/                 # 业务逻辑
@@ -61,7 +61,7 @@ server/
 |------|----------|------|
 | 认证 | `/auth` | JWT 登录 |
 | Region / 起降点 | `/regions`, `/landing-points` | 多 Region 数据隔离 |
-| 气象 | `/weather` | 和风实况 + Open-Meteo 预报 + 格点缓存 |
+| 气象 | `/weather` | Open-Meteo 实况/预报 + 格点缓存 |
 | 风场 | `/wind-field` | NetCDF 三维风场 |
 | 风险 | `/risk` | 风险场热力图 / 单点 |
 | 适飞 | `/flyability` | 起降点 / 航路适飞矩阵 |

@@ -9,9 +9,6 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
@@ -19,13 +16,7 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.net.URI;
-
-import java.io.BufferedReader;
-import java.io.ByteArrayInputStream;
-import java.io.InputStreamReader;
-import java.io.IOException;
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -35,7 +26,6 @@ import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.zip.GZIPInputStream;
 import com.bluesky.util.TimeBucketUtil;
 
 /**
@@ -95,7 +85,7 @@ public class WeatherService {
 
     /**
      * 获取重点关注区域实时气象数据
-     * 先查数据库，如果没有则调用和风天气API
+     * 先查数据库，如果没有则调用 Open-Meteo API
      */
     public Map<String, Object> getRealtimeWeather(String pointId) {
         WeatherRealtime latest = safeSelectLatestRealtime(pointId);
@@ -111,17 +101,16 @@ public class WeatherService {
             }
         }
 
-        // 3. 数据库没有或数据过期，调用和风天气API
+        // 3. 数据库没有或数据过期，调用 Open-Meteo API
         try {
             // 根据pointId从monitoring_points表查询坐标
             LandingPoint point = landingPointService.getEntity(pointId);
             double longitude = point.getLongitude().doubleValue();
             double latitude = point.getLatitude().doubleValue();
 
-            // 调用和风天气API
-            Map<String, Object> weatherData = callQWeatherAPI(longitude, latitude);
+            Map<String, Object> weatherData = callOpenMeteoCurrentAPI(longitude, latitude);
             if (weatherData == null) {
-                log.warn("和风天气API调用失败，尝试返回数据库中的旧数据");
+                log.warn("Open-Meteo API 调用失败，尝试返回数据库中的旧数据");
                 if (latest != null) {
                     Map<String, Object> result = new HashMap<>();
                     result.put("updateTime", LocalDateTime.now().toString());
@@ -159,7 +148,7 @@ public class WeatherService {
             newRecord.setWindShearLevel(weatherData.get("windShearLevel").toString());
             newRecord.setStabilityIndex(weatherData.get("stabilityIndex").toString());
             // 添加数据来源和质量字段
-            newRecord.setDataSource("qweather");
+            newRecord.setDataSource("open-meteo");
             newRecord.setDataQuality(85);
             newRecord.setCreatedAt(LocalDateTime.now());
 
@@ -198,7 +187,7 @@ public class WeatherService {
     }
 
     /**
-     * 适飞计算用气象因子（V2 无 weather_realtime 时走和风坐标查询）
+     * 适飞计算用气象因子（V2 无 weather_realtime 时走 Open-Meteo 坐标查询）
      */
     public Map<String, Object> buildFlyabilityWeatherMap(String pointId) {
         return buildFlyabilityWeatherMap(pointId, TimeBucketUtil.currentBucketLocal());
@@ -368,7 +357,7 @@ public class WeatherService {
         return values.get(index);
     }
 
-    /** V2：和风坐标结果 → 统一气象点字段（m/s、km 等） */
+    /** V2：Open-Meteo 坐标结果 → 统一气象点字段（m/s、km 等） */
     public Map<String, Object> flattenCoordinatesWeather(Map<String, Object> apiResult) {
         if (apiResult == null || Boolean.TRUE.equals(apiResult.get("error"))) {
             return Map.of();
@@ -427,7 +416,7 @@ public class WeatherService {
         Map<String, Object> d = extractWeatherDataMap(apiResult.get("data"));
         double windKmh = parseDouble(d.get("windSpeed"));
         flat.put("windSpeed", windKmh > 0 ? windKmh / 3.6 : 0d);
-        // 风向用 wind360（0–360°）；windDir 为和风文字描述（如「东北风」），不可 parse 成数字
+        // 风向用 wind360（0–360°）；windDir 为文字描述（如「东北风」），不可 parse 成数字
         flat.put("windDirection", parseDouble(d.get("wind360")));
         flat.put("windDirText", d.get("windDir"));
         flat.put("visibility", parseDouble(d.get("vis")));
@@ -439,7 +428,7 @@ public class WeatherService {
         return flat;
     }
 
-    /** 补充风切变、颠簸指数、湍流（和风 API 或预报字段 → 适飞计算用数值） */
+    /** 补充风切变、颠簸指数、湍流（Open-Meteo 实况或预报字段 → 适飞计算用数值） */
     private void enrichDerivedWeatherFactors(Map<String, Object> flat) {
         enrichDerivedWeatherFactors(flat, flat);
     }
@@ -645,7 +634,7 @@ public class WeatherService {
 
     /**
      * 根据经纬度获取实时气象数据
-     * 直接调用和风天气API获取指定坐标的气象信息
+     * 直接调用 Open-Meteo API 获取指定坐标的实况气象信息
      *
      * @param longitude 经度
      * @param latitude  纬度
@@ -666,8 +655,7 @@ public class WeatherService {
             return errorResult;
         }
 
-        // 调用和风天气API
-        Map<String, Object> weatherData = callQWeatherAPI(longitude, latitude);
+        Map<String, Object> weatherData = callOpenMeteoCurrentAPI(longitude, latitude);
         if (weatherData == null) {
             Map<String, Object> errorResult = new HashMap<>();
             errorResult.put("error", true);
@@ -685,7 +673,7 @@ public class WeatherService {
 
     /**
      * 批量按经纬度获取实时气象（顺序与请求一致）。
-     * 对经度、纬度四舍五入到小数 4 位做去重，相同网格点只调用一次和风接口，降低 QPS。
+     * 对经度、纬度四舍五入到小数 4 位做去重，相同网格点只调用一次 Open-Meteo 接口，降低 QPS。
      */
     public Map<String, Object> getWeatherByCoordinatesBatch(List<com.bluesky.dto.WeatherBatchRequest.Coordinate> coordinates) {
         List<Map<String, Object>> series = new ArrayList<>();
@@ -731,96 +719,37 @@ public class WeatherService {
     }
 
     /**
-     * 调用和风天气API
+     * 调用 Open-Meteo 实况 API（current 参数）
      */
-    private Map<String, Object> callQWeatherAPI(double longitude, double latitude) {
+    private Map<String, Object> callOpenMeteoCurrentAPI(double longitude, double latitude) {
         int maxRetries = 3;
         int retryCount = 0;
 
         while (retryCount < maxRetries) {
             try {
                 RestTemplate restTemplate = createRestTemplateWithTimeout();
+                URI uri = buildOpenMeteoCurrentUri(latitude, longitude);
 
-                String url = String.format(
-                    "https://m73yfr9h37.re.qweatherapi.com/v7/weather/now?location=%f,%f",
-                        longitude, latitude);
+                log.info("第{}次尝试调用 Open-Meteo 实况 API: {}", retryCount + 1, uri);
+                ResponseEntity<String> responseEntity = restTemplate.getForEntity(uri, String.class);
 
-                HttpHeaders headers = new HttpHeaders();
-                headers.set("X-QW-Api-Key", "7226910f80e3434aa26b1b55938b6f58");
-                headers.set("Accept-Encoding", "gzip");
-
-                HttpEntity<String> entity = new HttpEntity<>(headers);
-
-                log.info("第{}次尝试调用和风天气API: {}", retryCount + 1, url);
-                ResponseEntity<byte[]> responseEntity = restTemplate.exchange(url, HttpMethod.GET, entity, byte[].class);
-
-                if (responseEntity.getStatusCode().is2xxSuccessful()) {
-                    byte[] responseBodyBytes = responseEntity.getBody();
-                    if (responseBodyBytes != null) {
-                        boolean isGzipped = false;
-                        if (responseBodyBytes.length >= 2) {
-                            int magic = ((responseBodyBytes[0] & 0xff) << 8) | (responseBodyBytes[1] & 0xff);
-                            isGzipped = (magic == GZIPInputStream.GZIP_MAGIC);
-                        }
-
-                        String responseBody;
-                        try (ByteArrayInputStream bais = new ByteArrayInputStream(responseBodyBytes);
-                             GZIPInputStream gis = new GZIPInputStream(bais);
-                             InputStreamReader isr = new InputStreamReader(gis, StandardCharsets.UTF_8);
-                             BufferedReader br = new BufferedReader(isr)) {
-                            StringBuilder sb = new StringBuilder();
-                            String line;
-                            while ((line = br.readLine()) != null) {
-                                sb.append(line);
-                            }
-                            responseBody = sb.toString();
-                        }
-
-                        ObjectMapper objectMapper = new ObjectMapper();
-                        ObjectNode jsonResponse = objectMapper.readValue(responseBody, ObjectNode.class);
-
-                        String code = jsonResponse.get("code").asText();
-                        if ("200".equals(code)) {
-                            ObjectNode now = (ObjectNode) jsonResponse.get("now");
-                            Map<String, Object> weatherData = new HashMap<>();
-
-                            weatherData.put("temp", now.get("temp").asText());
-                            weatherData.put("feelsLike", now.get("feelsLike").asText());
-                            weatherData.put("icon", now.get("icon").asText());
-                            weatherData.put("text", now.get("text").asText());
-                            weatherData.put("wind360", now.get("wind360").asText());
-                            weatherData.put("windDir", now.get("windDir").asText());
-                            weatherData.put("windScale", now.get("windScale").asText());
-                            weatherData.put("windSpeed", now.get("windSpeed").asText());
-                            weatherData.put("humidity", now.get("humidity").asText());
-                            weatherData.put("precip", now.get("precip").asText());
-                            weatherData.put("pressure", now.get("pressure").asText());
-                            weatherData.put("vis", now.get("vis").asText());
-                            weatherData.put("cloud", now.get("cloud").asText());
-                            weatherData.put("dew", now.get("dew").asText());
-
-                            // 计算颠簸指数（基于风速和能见度）
-                            double windSpeedKmH = Double.parseDouble(now.get("windSpeed").asText());
-                            double visKm = Double.parseDouble(now.get("vis").asText());
-                            double turbulenceIndex = calculateTurbulenceIndex(windSpeedKmH, visKm);
-                            weatherData.put("turbulenceIndex", String.format("%.2f", turbulenceIndex));
-
-                            weatherData.put("windShearLevel", "low");
-                            weatherData.put("stabilityIndex", "C");
-
-                            log.info("成功获取和风天气数据");
-                            return weatherData;
-                        } else {
-                            log.warn("和风天气API返回错误码: {}", code);
-                        }
+                if (responseEntity.getStatusCode().is2xxSuccessful() && responseEntity.getBody() != null) {
+                    ObjectMapper objectMapper = new ObjectMapper();
+                    ObjectNode jsonResponse = objectMapper.readValue(responseEntity.getBody(), ObjectNode.class);
+                    ObjectNode current = (ObjectNode) jsonResponse.get("current");
+                    if (current != null) {
+                        Map<String, Object> weatherData = mapOpenMeteoCurrentToWeatherData(current);
+                        log.info("成功获取 Open-Meteo 实况数据");
+                        return weatherData;
                     }
+                    log.warn("Open-Meteo API 响应缺少 current 节点");
                 }
             } catch (Exception e) {
                 retryCount++;
-                log.error("第{}次调用和风天气API失败: {}", retryCount, e.getMessage());
+                log.error("第{}次调用 Open-Meteo 实况 API 失败: {}", retryCount, e.getMessage());
 
                 if (retryCount >= maxRetries) {
-                    log.error("已达到最大重试次数({}次)，放弃调用和风天气API", maxRetries);
+                    log.error("已达到最大重试次数({}次)，放弃调用 Open-Meteo 实况 API", maxRetries);
                     break;
                 }
 
@@ -839,6 +768,74 @@ public class WeatherService {
         return null;
     }
 
+    private URI buildOpenMeteoCurrentUri(double lat, double lng) {
+        return UriComponentsBuilder.fromHttpUrl("https://api.open-meteo.com/v1/forecast")
+                .queryParam("latitude", lat)
+                .queryParam("longitude", lng)
+                .queryParam("timezone", TimeBucketUtil.ZONE.getId())
+                .queryParam("current", "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,visibility,dew_point_2m")
+                .build()
+                .encode()
+                .toUri();
+    }
+
+    private Map<String, Object> mapOpenMeteoCurrentToWeatherData(ObjectNode current) {
+        double temp = current.path("temperature_2m").asDouble();
+        double feelsLike = current.path("apparent_temperature").asDouble(temp);
+        int weatherCode = current.path("weather_code").asInt();
+        Map<String, String> weatherInfo = getWeatherDescription(weatherCode);
+        double windSpeedKmh = current.path("wind_speed_10m").asDouble();
+        int wind360 = current.path("wind_direction_10m").asInt();
+        double visibilityM = current.has("visibility") && !current.get("visibility").isNull()
+                ? current.path("visibility").asDouble()
+                : 10000d;
+        double visKm = Math.round(visibilityM / 1000.0 * 10.0) / 10.0;
+        double precip = current.path("precipitation").asDouble();
+        double turbulenceIndex = calculateTurbulenceIndex(windSpeedKmh, visKm);
+
+        Map<String, Object> weatherData = new HashMap<>();
+        weatherData.put("temp", String.format(Locale.US, "%.1f", temp));
+        weatherData.put("feelsLike", String.format(Locale.US, "%.1f", feelsLike));
+        weatherData.put("icon", String.valueOf(weatherCode));
+        weatherData.put("text", weatherInfo.get("text"));
+        weatherData.put("wind360", String.valueOf(wind360));
+        weatherData.put("windDir", windDirFromDegrees(wind360));
+        weatherData.put("windScale", windScaleFromKmh(windSpeedKmh));
+        weatherData.put("windSpeed", String.format(Locale.US, "%.1f", windSpeedKmh));
+        weatherData.put("humidity", String.valueOf(current.path("relative_humidity_2m").asInt()));
+        weatherData.put("precip", String.format(Locale.US, "%.2f", precip));
+        weatherData.put("pressure", String.format(Locale.US, "%.0f", current.path("pressure_msl").asDouble()));
+        weatherData.put("vis", String.format(Locale.US, "%.1f", visKm));
+        weatherData.put("cloud", String.valueOf(current.path("cloud_cover").asInt()));
+        weatherData.put("dew", String.format(Locale.US, "%.1f", current.path("dew_point_2m").asDouble()));
+        weatherData.put("turbulenceIndex", String.format(Locale.US, "%.2f", turbulenceIndex));
+        weatherData.put("windShearLevel", "low");
+        weatherData.put("stabilityIndex", "C");
+        return weatherData;
+    }
+
+    private String windDirFromDegrees(double degrees) {
+        String[] dirs = {"北", "东北", "东", "东南", "南", "西南", "西", "西北"};
+        int index = ((int) Math.round(degrees / 45.0) % 8 + 8) % 8;
+        return dirs[index] + "风";
+    }
+
+    private String windScaleFromKmh(double kmh) {
+        if (kmh < 1) return "0";
+        if (kmh < 6) return "1";
+        if (kmh < 12) return "2";
+        if (kmh < 20) return "3";
+        if (kmh < 29) return "4";
+        if (kmh < 39) return "5";
+        if (kmh < 50) return "6";
+        if (kmh < 62) return "7";
+        if (kmh < 75) return "8";
+        if (kmh < 89) return "9";
+        if (kmh < 103) return "10";
+        if (kmh < 118) return "11";
+        return "12";
+    }
+
     /**
      * 计算颠簸指数（0-1之间）
      * 基于风速和能见度综合评估
@@ -849,7 +846,7 @@ public class WeatherService {
      */
     private double calculateTurbulenceIndex(double windSpeedKmH, double visKm) {
         // 风速影响因子（风速越大，颠簸可能性越高）
-        // 和风天气返回的风速是 km/h，转换为 m/s 进行计算
+        // Open-Meteo 风速单位为 km/h，转换为 m/s 进行计算
         double windSpeedMs = windSpeedKmH / 3.6;
         double windFactor = Math.min(1.0, Math.max(0.0, (windSpeedMs - 6) / 10));
         

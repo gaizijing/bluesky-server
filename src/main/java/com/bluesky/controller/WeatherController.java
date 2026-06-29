@@ -77,7 +77,7 @@ public class WeatherController {
     }
 
     @Operation(summary = "批量按经纬度获取气象数据",
-            description = "顺序与请求一致；服务端对 4 位小数经纬度去重，减少和风 QPS")
+            description = "顺序与请求一致；服务端对 4 位小数经纬度去重，减少 Open-Meteo QPS")
     @PostMapping("/by-coords/batch")
     public Result<Map<String, Object>> getWeatherByCoordinatesBatch(
             @Valid @RequestBody WeatherBatchRequest body) {

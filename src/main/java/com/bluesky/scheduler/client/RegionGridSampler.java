@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 按 Region 边界采样格点气象（复用 WeatherService / 和风），供 P2 格点缓存写入。
+ * 按 Region 边界采样格点气象（复用 WeatherService / Open-Meteo），供 P2 格点缓存写入。
  */
 @Component
 @RequiredArgsConstructor

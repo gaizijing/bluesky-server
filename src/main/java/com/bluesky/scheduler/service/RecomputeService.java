@@ -44,7 +44,10 @@ public class RecomputeService {
             String regionId = region.getRegionId();
             try {
                 switch (event.getRuleType()) {
-                    case FLYABILITY -> recomputeFlyability(regionId, buckets);
+                    case FLYABILITY -> {
+                        recomputeFlyability(regionId, buckets);
+                        recomputeRisk(regionId, buckets);
+                    }
                     case RISK -> recomputeRisk(regionId, buckets);
                     case WARNING -> log.info("WARNING 规则发布暂不触发 OSI/R_met 缓存重算 region={}", regionId);
                 }

@@ -1,4 +1,4 @@
--- V2.0 方案 B：空库全量建表（P0 核心 + P1/P2 预留）
+-- V1 全量建表（整合原 V1~V31 结构，空库首次启动执行）
 
 -- ========== 用户与权限 ==========
 CREATE TABLE users (
@@ -23,10 +23,8 @@ CREATE TABLE region (
     name            VARCHAR(100) NOT NULL,
     center_lng      DOUBLE PRECISION,
     center_lat      DOUBLE PRECISION,
-    west            DOUBLE PRECISION NOT NULL,
-    east            DOUBLE PRECISION NOT NULL,
-    south           DOUBLE PRECISION NOT NULL,
-    north           DOUBLE PRECISION NOT NULL,
+    boundary_url    VARCHAR(500),
+    adcode          VARCHAR(20),
     map_lift_json   JSONB,
     model_url       VARCHAR(500),
     enabled         BOOLEAN NOT NULL DEFAULT TRUE,
@@ -309,3 +307,42 @@ CREATE TABLE sim_session (
     created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+-- ========== 摄像头 ==========
+CREATE TABLE cameras (
+    id              VARCHAR(50) PRIMARY KEY,
+    name            VARCHAR(100) NOT NULL,
+    location        VARCHAR(255),
+    point_id        VARCHAR(50) NOT NULL REFERENCES landing_point (landing_point_id),
+    longitude       NUMERIC(10, 6),
+    latitude        NUMERIC(10, 6),
+    status          VARCHAR(20) NOT NULL DEFAULT 'online',
+    resolution      VARCHAR(32) DEFAULT '1920x1080',
+    preview_url     VARCHAR(500),
+    stream_url      VARCHAR(500),
+    last_heartbeat  BIGINT,
+    is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_cameras_point_id ON cameras (point_id);
+CREATE INDEX idx_cameras_status ON cameras (status);
+
+-- ========== 天气预报缓存 ==========
+CREATE TABLE weather_forecast (
+    id              BIGSERIAL PRIMARY KEY,
+    point_id        VARCHAR(50) NOT NULL REFERENCES landing_point (landing_point_id),
+    forecast_time   TIMESTAMP NOT NULL,
+    temperature     NUMERIC(6, 2),
+    wind_speed      NUMERIC(6, 2),
+    visibility      NUMERIC(8, 2),
+    precipitation   NUMERIC(6, 2),
+    weather_code    INT,
+    weather_text    VARCHAR(100),
+    data_source     VARCHAR(50),
+    data_quality    INT,
+    created_at      TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_weather_forecast_point_time ON weather_forecast (point_id, forecast_time);

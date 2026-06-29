@@ -14,6 +14,7 @@ import jakarta.annotation.PreDestroy;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -60,8 +61,10 @@ public class IsimUdpService {
         try {
             // 如果 socket 已存在，先关闭
             stopUDP();
-            
-            receiveSocket = new DatagramSocket(config.getReceivePort());
+
+            receiveSocket = new DatagramSocket(null);
+            receiveSocket.setReuseAddress(true);
+            receiveSocket.bind(new InetSocketAddress(config.getReceivePort()));
             sendSocket = new DatagramSocket();
 
             executorService = Executors.newSingleThreadExecutor();

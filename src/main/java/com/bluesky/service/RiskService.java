@@ -1,9 +1,10 @@
 package com.bluesky.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.bluesky.entity.FlyabilityRuleSet;
 import com.bluesky.entity.RiskFieldCache;
-import com.bluesky.entity.RiskRuleSet;
 import com.bluesky.mapper.RiskFieldCacheMapper;
+import com.bluesky.service.risk.RiskMetCalculator;
 import com.bluesky.util.TimeBucketUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -16,10 +17,11 @@ import java.util.*;
 @RequiredArgsConstructor
 public class RiskService {
 
-    private final RiskRuleSetService ruleSetService;
+    private final FlyabilityRuleSetService flyabilityRuleSetService;
     private final RegionService regionService;
     private final RiskFieldCacheMapper riskFieldCacheMapper;
     private final WeatherService weatherService;
+    private final RiskMetCalculator riskMetCalculator;
 
     public Map<String, Object> queryPoint(double lng, double lat, String time, int heightM) {
         OffsetDateTime requested = TimeBucketUtil.parseOrNow(time);
@@ -46,15 +48,15 @@ public class RiskService {
             return result;
         }
 
-        RiskRuleSet ruleSet = ruleSetService.getPublished();
-        Map<String, Object> weather = weatherService.getWeatherByCoordinates(lng, lat);
-        double wind = doubleVal(weather.get("windSpeed"));
-        double value = Math.min(100d, wind * 8d);
-        String level = value >= 70 ? "HIGH" : value >= 40 ? "MEDIUM" : "LOW";
-        result.put("value", value);
-        result.put("level", level);
-        result.put("reason", wind >= 10 ? "风速偏大" : "综合风险一般");
-        result.put("ruleVersion", ruleSet.getRuleSetId() + "-v" + ruleSet.getVersionNo());
+        FlyabilityRuleSet flyabilityRuleSet = flyabilityRuleSetService.getPublished();
+        Map<String, Object> weather = weatherService.buildFlyabilityWeatherMap(lng, lat, bucket);
+        Map<String, Object> evaluated = riskMetCalculator.evaluate(
+                flyabilityRuleSet.getRulesJson(),
+                weather);
+        result.put("value", evaluated.get("value"));
+        result.put("level", evaluated.get("level"));
+        result.put("reason", evaluated.get("reason"));
+        result.put("ruleVersion", flyabilityRuleSet.getRuleSetId() + "-v" + flyabilityRuleSet.getVersionNo());
         result.put("isStale", true);
         return result;
     }
@@ -115,15 +117,5 @@ public class RiskService {
         payload.put("cells", grid);
         payload.put("isStale", grid.isEmpty());
         return payload;
-    }
-
-    private double doubleVal(Object value) {
-        if (value == null) return 0d;
-        if (value instanceof Number n) return n.doubleValue();
-        try {
-            return Double.parseDouble(String.valueOf(value));
-        } catch (Exception e) {
-            return 0d;
-        }
     }
 }

@@ -10,7 +10,7 @@
 
 | 标记 | 含义 |
 |------|------|
-| 🟢 **真实** | 直接调用外部 API 或解析真实文件（和风、Open-Meteo、NetCDF、ISIM UDP） |
+| 🟢 **真实** | 直接调用外部 API 或解析真实文件（Open-Meteo、NetCDF、ISIM UDP） |
 | 🟡 **混合** | 优先读调度缓存；无缓存时用真实 API 计算，或回退到 Flyway 种子/派生公式 |
 | 🟠 **演示** | Flyway 种子、占位 URL、硬编码默认值，或 LLM 未接入时的模板文案 |
 | ⚪ **配置** | 纯数据库 CRUD，数据由库内记录决定（含种子初始化） |
@@ -21,13 +21,12 @@
 
 | 数据源 | 用途 | 配置位置 |
 |--------|------|----------|
-| **和风天气 QWeather** | 实时温度、风速、能见度、湿度等 | `WeatherService.callQWeatherAPI` |
-| **Open-Meteo** | 15 分钟粒度预报、适飞未来时间桶 | `WeatherService.fetchOpenMeteoForecastSeries` |
+| **Open-Meteo** | 实况、15 分钟粒度预报、适飞未来时间桶 | `WeatherService.callOpenMeteoCurrentAPI` / `fetchOpenMeteoForecastSeries` |
 | **NOAA Reanalysis2 NetCDF** | 3D 风场 U/V 分量 | `application.yml` → `wind.field.u-file/v-file` |
 | **ISIM 模拟机 UDP** | 飞机位置、重定位、风场回灌 | `application.yml` → `isim.*` |
 | **WebSocket** | 前端实时飞机数据 | `/ws/isim-data` |
 
-调度任务（`scheduler.enabled=true`）会周期性调用和风 API，写入：
+调度任务（`scheduler.enabled=true`）会周期性调用 Open-Meteo API，写入：
 
 - `weather_grid_cache` — 气象格点
 - `risk_field_cache` — 风险场格点
@@ -42,12 +41,9 @@
 | 迁移脚本 | 内容 |
 |----------|------|
 | `V2__seed_data.sql` | 用户、Region R1/R2、起降点、规则集 |
-| `V3/V11/V24__*_warning_*_seed.sql` | 测试预警记录 |
-| `V4/V22__risk_field_*_seed.sql` | 公式生成的风险场格点（`rule_version` 含 `-seed`） |
-| `V5/V8/V9/V21__weather_grid_*_seed.sql` | 公式生成的气象格点（`grid_json.source` 为 `v5-seed`/`v21-seed`） |
+| `V2__seed_data.sql` | 演示预警、风险场、气象格点、航路、禁飞区、摄像头等示例数据 |
 | `V14__camera_demo_seed.sql` | 摄像头记录，预览图为 picsum.photos 占位 |
 | `V15__route_seed_r2.sql` | 演示航路「顺丰-黄岛保税」 |
-| `V23__no_fly_zone_seed.sql` | 演示禁飞区多边形 |
 
 **判断是否为种子数据：**
 
@@ -89,13 +85,13 @@
 
 | 方法 | 路径 | 数据来源 | 说明 |
 |------|------|----------|------|
-| GET | `/weather/realtime` | 🟢 和风 | 按起降点 ID 返回实况（含 TemporalMeta） |
-| GET | `/weather/point` | 🟢 和风 | 单点查询（`lng`, `lat`, 可选 `includeRisk`） |
-| POST | `/weather/by-coords/batch` | 🟢 和风 | 批量坐标查询，4 位小数去重 |
+| GET | `/weather/realtime` | 🟢 Open-Meteo | 按起降点 ID 返回实况（含 TemporalMeta） |
+| GET | `/weather/point` | 🟢 Open-Meteo | 单点查询（`lng`, `lat`, 可选 `includeRisk`） |
+| POST | `/weather/by-coords/batch` | 🟢 Open-Meteo | 批量坐标查询，4 位小数去重 |
 | GET | `/weather/forecast-trend` | 🟢 Open-Meteo | 趋势预报折线图 |
 | GET | `/weather/grid-field` | 🟡 | 读 `weather_grid_cache`；无缓存返回空 grid + `cacheMiss` |
 | GET | `/weather/heatmap/citywide` | 🟡 | 从 `risk_field_cache` 源点 + IDW 插值 |
-| GET | `/weather/vertical-profile` | 🟡 | 有表数据则用；否则基于和风按高度公式派生 |
+| GET | `/weather/vertical-profile` | 🟡 | 有表数据则用；否则基于 Open-Meteo 按高度公式派生 |
 | GET | `/meteorology/vertical-profile` | 🟡 | **已废弃**，兼容旧路径，同上 |
 
 **未暴露的 HTTP 接口：** `WeatherService.getMicroscaleWeather()` 仍读 `risk_field_cache`，但无 Controller 映射。
@@ -117,7 +113,7 @@
 | 方法 | 路径 | 数据来源 | 说明 |
 |------|------|----------|------|
 | GET | `/risk/heatmap` | 🟡 | 读 `risk_field_cache`；种子或调度写入 |
-| GET | `/risk/point` | 🟡 | 同上；无缓存时用和风临时算，`isStale: true` |
+| GET | `/risk/point` | 🟡 | 同上；无缓存时用 Open-Meteo 临时算，`isStale: true` |
 
 ---
 
@@ -125,7 +121,7 @@
 
 | 方法 | 路径 | 数据来源 | 说明 |
 |------|------|----------|------|
-| GET | `/flyability/landing-matrix` | 🟡 | 优先 `osi_landing_cache`；否则实时和风/Open-Meteo |
+| GET | `/flyability/landing-matrix` | 🟡 | 优先 `osi_landing_cache`；否则实时 Open-Meteo |
 | GET | `/flyability/route-matrix` | 🟡 | 优先 `osi_route_cache`；否则实时计算 |
 
 > V1 的 `/suitability/*` 已废弃，请改用上述接口。
@@ -247,7 +243,7 @@ ISIM 气象查询失败时 fallback 硬编码默认值（风速 5 m/s、温度 2
 | `/flyability-rule-sets` | 适飞规则 CRUD / 发布 | ⚪ |
 | `/warning-rule-sets` | 预警规则 CRUD / 发布 | ⚪ |
 | `/scheduler/health` | 调度健康检查 | ⚪ |
-| `/scheduler/recompute` | 手动触发格点/风险/适飞重算 | 🟢 触发和风采样 |
+| `/scheduler/recompute` | 手动触发格点/风险/适飞重算 | 🟢 触发 Open-Meteo 采样 |
 | `/scheduler/cleanup` | 清理过期缓存 | ⚪ |
 
 ---
@@ -277,7 +273,7 @@ ISIM 气象查询失败时 fallback 硬编码默认值（风速 5 m/s、温度 2
 
 ## 6. 开发环境切换到真实数据
 
-1. 确保网络可访问和风 API 与 Open-Meteo。
+1. 确保网络可访问 Open-Meteo API。
 2. 启动后端，确认 `scheduler.enabled=true`。
 3. 执行 `POST /api/scheduler/recompute?regionId=R1`（及 R2）。
 4. 检查缓存：`risk_field_cache` 中 `rule_version` 不含 `-seed`，且 `computed_at` 为近期时间。

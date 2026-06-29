@@ -24,7 +24,7 @@ public class SchedulerProperties {
 
     private List<String> products = List.of("temperature", "wind", "visibility", "precip");
 
-    /** 格点采样间隔（毫秒），避免和风 QPS 过高 */
+    /** 格点采样间隔（毫秒），避免 Open-Meteo QPS 过高 */
     private long gridSampleIntervalMs = 1500;
 
     /** 每日清理 cron（默认 02:00） */
